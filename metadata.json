@@ -1,0 +1,5 @@
+{
+  "name": "L-Group Predictive Coding Simulation",
+  "description": "A real-time 3D simulation of vibrationally coupled particles minimizing free energy, based on the L-Group Predictive Coding Networks framework.",
+  "requestFramePermissions": []
+}
