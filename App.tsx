@@ -67,6 +67,7 @@ const textToPoints = (text: string): { positions: Float32Array, count: number } 
 
 interface ParticleSystemProps {
   params: SimulationParams;
+  dataRef: React.MutableRefObject<ParticleData>;
 }
 
 // Define the structure of a saved memory snapshot
@@ -81,7 +82,7 @@ interface MemorySnapshot {
   activation: Float32Array;
 }
 
-const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
+const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const ghostRef = useRef<THREE.InstancedMesh>(null);
   const linesRef = useRef<THREE.LineSegments>(null);
@@ -94,52 +95,47 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
       formationProgress: 0.0
   });
 
-  const data = useRef<ParticleData>({
-    x: new Float32Array(0),
-    v: new Float32Array(0),
-    phase: new Float32Array(0),
-    spin: new Float32Array(0),
-    activation: new Float32Array(0),
-    target: new Float32Array(0),
-    hasTarget: new Uint8Array(0),
-    memoryMatrix: new Float32Array(0),
-  });
+  // We use dataRef passed from parent to share state with UI visualization
+  const data = dataRef;
 
   useEffect(() => {
     const count = params.particleCount;
     const memorySize = count * count;
     
-    data.current = {
-      x: new Float32Array(count * 3),
-      v: new Float32Array(count * 3),
-      phase: new Float32Array(count),
-      spin: new Float32Array(count),
-      activation: new Float32Array(count),
-      target: new Float32Array(count * 3),
-      hasTarget: new Uint8Array(count),
-      memoryMatrix: new Float32Array(memorySize).fill(-1), 
-    };
-
-    // Refined Fibonacci Sphere Distribution
-    const phi = Math.PI * (3 - Math.sqrt(5)); // Golden Angle
-    
-    for (let i = 0; i < count; i++) {
-        const y = 1 - (i + 0.5) * (2 / count); 
-        const radiusAtY = Math.sqrt(1 - y * y); 
-        const theta = phi * i; 
+    // Initialize data if not already done or if size changes
+    if (data.current.x.length !== count * 3) {
+        data.current = {
+            x: new Float32Array(count * 3),
+            v: new Float32Array(count * 3),
+            phase: new Float32Array(count),
+            spin: new Float32Array(count),
+            activation: new Float32Array(count),
+            target: new Float32Array(count * 3),
+            hasTarget: new Uint8Array(count),
+            memoryMatrix: new Float32Array(memorySize).fill(-1), 
+        };
         
-        const r = 14.0 * Math.cbrt(Math.random()); 
+        // Refined Fibonacci Sphere Distribution
+        const phi = Math.PI * (3 - Math.sqrt(5)); // Golden Angle
         
-        data.current.x[i * 3] = Math.cos(theta) * radiusAtY * r;
-        data.current.x[i * 3 + 1] = y * r;
-        data.current.x[i * 3 + 2] = Math.sin(theta) * radiusAtY * r;
+        for (let i = 0; i < count; i++) {
+            const y = 1 - (i + 0.5) * (2 / count); 
+            const radiusAtY = Math.sqrt(1 - y * y); 
+            const theta = phi * i; 
+            
+            const r = 14.0 * Math.cbrt(Math.random()); 
+            
+            data.current.x[i * 3] = Math.cos(theta) * radiusAtY * r;
+            data.current.x[i * 3 + 1] = y * r;
+            data.current.x[i * 3 + 2] = Math.sin(theta) * radiusAtY * r;
 
-        data.current.phase[i] = Math.random() * Math.PI * 2;
-        data.current.spin[i] = Math.random() > 0.5 ? 0.5 : -0.5;
+            data.current.phase[i] = Math.random() * Math.PI * 2;
+            data.current.spin[i] = Math.random() > 0.5 ? 0.5 : -0.5;
+        }
+        
+        memoryBank.current.clear();
+        systemState.current.meanError = 10.0; 
     }
-    
-    memoryBank.current.clear();
-    systemState.current.meanError = 10.0; 
 
   }, [params.particleCount]);
 
@@ -710,14 +706,116 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
   );
 };
 
+// --- Memory Matrix Heatmap ---
+
+interface MemoryHeatmapProps {
+    dataRef: React.MutableRefObject<ParticleData>;
+    params: SimulationParams;
+}
+
+const MemoryHeatmap: React.FC<MemoryHeatmapProps> = ({ dataRef, params }) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        let animationFrameId: number;
+
+        const render = () => {
+            if (!canvasRef.current || !dataRef.current.memoryMatrix) return;
+            
+            const count = params.particleCount;
+            // Optimization: Only update visually every X frames if needed, but modern canvas is fast.
+            // We'll update every frame for smoothness.
+            
+            const ctx = canvasRef.current.getContext('2d');
+            if (!ctx) return;
+            
+            const size = 256; // Fixed visual size for the canvas buffer (scaled up by CSS)
+            if (canvasRef.current.width !== size) {
+                canvasRef.current.width = size;
+                canvasRef.current.height = size;
+            }
+
+            const matrix = dataRef.current.memoryMatrix;
+            const imgData = ctx.createImageData(size, size);
+            const pixels = new Uint32Array(imgData.data.buffer);
+            
+            // To fit N particles into 'size' pixels, we might need to downsample or just display a subset.
+            // Visualizing 800x800 is possible but requires a larger canvas buffer.
+            // Let's map particle index (0..count) to pixel coordinates (x, y) via simple wrapping
+            // or just sample the matrix sparsely.
+            // Better approach for visualization: Map the Interaction Matrix.
+            // Since N is 800, we can sample the first 256x256 interactions, or scale down.
+            
+            // Let's do a direct mapping of a subset: Top-Left 256x256 particles.
+            // This shows the local connectivity of the first chunk of the cloud.
+            
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    const idx = (y * size + x);
+                    
+                    // Map x,y visual coordinates to particle indices.
+                    // We step through the particles.
+                    const pI = Math.floor((y / size) * count);
+                    const pJ = Math.floor((x / size) * count);
+                    
+                    // Actually, simpler: just show index i vs index j for i,j < size
+                    // If count > size, we only show interactions between first 256 particles.
+                    // If we want to show ALL, we need to bin.
+                    
+                    // Let's just show the first 256x256 connections to keep it performant and crisp.
+                    // Most particles behave similarly.
+                    
+                    const matIdx = y * count + x; // Linear index in the full matrix
+                    
+                    if (y < count && x < count) {
+                         const val = matrix[matIdx];
+                         
+                         if (val !== -1) {
+                             // Connection exists.
+                             // Color logic: ABGR (Little Endian)
+                             // Gold: Alpha=FF, Blue=00, Green=D7, Red=FF -> 0xFF00D7FF
+                             pixels[idx] = 0xFF00D7FF;
+                         } else {
+                             // Black background: Alpha=FF, B=0, G=0, R=0 -> 0xFF000000
+                             // Or transparent: 0x00000000
+                             pixels[idx] = 0xFF101010; // Very dark gray
+                         }
+                    } else {
+                        pixels[idx] = 0xFF000000;
+                    }
+                }
+            }
+            
+            ctx.putImageData(imgData, 0, 0);
+            animationFrameId = requestAnimationFrame(render);
+        };
+
+        render();
+        return () => cancelAnimationFrame(animationFrameId);
+    }, [params.particleCount]);
+
+    return (
+        <div ref={containerRef} className="mt-4 border border-cyan-500/30 rounded p-2 bg-black/60">
+            <h3 className="text-[10px] font-bold uppercase tracking-widest text-cyan-300 mb-2">Memory Matrix (Subsection)</h3>
+            <canvas 
+                ref={canvasRef} 
+                className="w-full h-auto aspect-square image-pixelated rounded border border-white/5"
+            />
+            <p className="text-[9px] text-gray-500 mt-1">Real-time synaptic weights (Yellow = Learned)</p>
+        </div>
+    );
+};
+
 // --- UI Overlay ---
 
 interface UIOverlayProps {
   params: SimulationParams;
   setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
+  dataRef: React.MutableRefObject<ParticleData>;
 }
 
-const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
+const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => {
   const [localText, setLocalText] = useState("");
   const [showInfo, setShowInfo] = useState(false);
 
@@ -885,6 +983,9 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
             </button>
         </div>
 
+        {/* Heatmap Visualization Added Here */}
+        <MemoryHeatmap dataRef={dataRef} params={params} />
+
         <div className="h-px bg-gray-700 mb-4" />
 
         <div className="space-y-4">
@@ -902,7 +1003,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
 
 // --- Main App ---
 
-const SimulationCanvas: React.FC<{ params: SimulationParams }> = ({ params }) => {
+const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.MutableRefObject<ParticleData> }> = ({ params, dataRef }) => {
   return (
     <Canvas camera={{ position: [0, 0, 35], fov: 50 }}>
         <color attach="background" args={['#020205']} />
@@ -910,7 +1011,7 @@ const SimulationCanvas: React.FC<{ params: SimulationParams }> = ({ params }) =>
         <pointLight position={[10, 10, 10]} intensity={1} />
         <pointLight position={[-10, -10, -10]} intensity={0.5} color="purple" />
         <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
-        <ParticleSystem params={params} />
+        <ParticleSystem params={params} dataRef={dataRef} />
         <OrbitControls autoRotate={false} />
     </Canvas>
   );
@@ -918,11 +1019,23 @@ const SimulationCanvas: React.FC<{ params: SimulationParams }> = ({ params }) =>
 
 function App() {
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
+  
+  // Lift the data ref to the top level so both Canvas and UI can access it
+  const dataRef = useRef<ParticleData>({
+    x: new Float32Array(0),
+    v: new Float32Array(0),
+    phase: new Float32Array(0),
+    spin: new Float32Array(0),
+    activation: new Float32Array(0),
+    target: new Float32Array(0),
+    hasTarget: new Uint8Array(0),
+    memoryMatrix: new Float32Array(0),
+  });
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans">
-      <SimulationCanvas params={params} />
-      <UIOverlay params={params} setParams={setParams} />
+      <SimulationCanvas params={params} dataRef={dataRef} />
+      <UIOverlay params={params} setParams={setParams} dataRef={dataRef} />
       
       <div className="absolute top-6 left-6 pointer-events-none max-w-lg hidden md:block">
         <h1 className="text-3xl font-bold text-white tracking-tight drop-shadow-md">
