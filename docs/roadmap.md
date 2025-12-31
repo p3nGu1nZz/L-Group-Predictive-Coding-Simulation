@@ -1,169 +1,203 @@
 # Roadmap: From Holographic Storage to Quantum Predictive Coding AI
 
-**Status:** Draft 1.0  
-**Target:** Transform current Attractor Network (Memory) into a Computational Inference Engine (AI).
+**Status:** Technical Specification 6.0  
+**Objective:** Evolve the current Attractor Network (Auto-Associative Memory) into a Hetero-Associative Computational Inference Engine.
 
 ---
 
-## Abstract
+## 1. Executive Summary
 
-The current implementation acts as a **Holographic Memory Store** (Auto-Associative Network). It uses free energy minimization to "snap" particles into learned configurations based on global equilibrium states. To evolve this into **Artificial Intelligence**, we must transition to a **Hetero-Associative** architecture capable of logic, temporal prediction, and self-supervised learning.
+The prototype currently functions as a **Holographic Memory Store** (Auto-Associative). To evolve this into **Artificial Intelligence**, we must implement four prioritized capabilities: **Semantic Layering**, **Reward-Modulated Plasticity**, **Temporal Dynamics**, and **Quantum Logic**.
 
-This roadmap outlines four critical phases to achieve "Quantum AI" behavior using the existing particle-physics engine.
+This specification is an **Actionable Implementation Plan** with explicit parameter defaults, data schemas, and safety protocols to ensure robust engineering.
 
 ---
 
-## Phase 1: Semantic Layering (Architecture & Morphology)
+## 2. Technical Architecture & Data Structures
 
-**Goal:** Break the monolithic particle cloud into functional "lobes" (Cortical Regions) to enable specific input-output processing.
-
-### Concept
-Currently, all 800 particles act as one brain region. To perform logic (e.g., "1 + 1 = 2"), we must spatially segregate them into inputs and outputs. The "Computation" happens in the physical interactions between these regions.
-
-### Technical Specifications
-
-#### 1. Data Structure Updates (`ParticleData`)
-We need to assign a `regionID` to every particle to define its role.
+### 2.1 Extended Data Model
+**File:** `types.ts`
 ```typescript
-interface ParticleData {
-  // ... existing fields
-  regionID: Uint8Array; // 0=Input A, 1=Input B, 2=Computation Cloud
+export interface ParticleData {
+  // ... existing fields (x, v, phase, etc.)
+  regionID: Uint8Array;            // 0=Input A (Cyan), 1=Input B (Pink), 2=Assoc (Gold)
+  forwardMatrix: Float32Array;     // Directed excitation (Pre -> Post)
+  feedbackMatrix: Float32Array;    // Prediction error (Post -> Pre)
+  delayedActivation: Float32Array; // Axonal delay buffer
+  lastActiveTime: Float32Array;    // Wall-clock timestamp (seconds) for STDP
 }
 ```
 
-#### 2. Spatial partitioning
-For $N=800$ particles:
-*   **Region 0 (Indices 0-199):** Left Input (Visual Cortex A).
-*   **Region 1 (Indices 200-399):** Right Input (Visual Cortex B).
-*   **Region 2 (Indices 400-799):** Associative Cloud (Prefrontal Cortex/Output).
+### 2.2 System State & Telemetry
+Global variables required for the "Teacher" loop, runtime monitoring, and safety breaks.
 
-#### 3. The "Cable" Implementation
-We must modify the physics loop (`App.tsx`) to enforce strict connection rules:
-*   **Intra-Region (0-0, 1-1):** High Stiffness. These hold the input shapes rigidly.
-*   **Inter-Region (0-2, 1-2):** "Axonal Cables." These are the learnable weights.
-*   **Inhibition (0-1):** Input A and Input B should *not* interact directly. They must communicate *through* Region 2.
+*   `meanError`: Running average of output deviation.
+*   `Temperature (T)`: [0.0 - 1.0], derived from error.
+*   `userFeedback`: -1 (Wrong/Hot), 0 (Neutral), 1 (Correct/Cold).
+*   `plasticityRate`: Fraction of edges updated per frame.
+*   `plasticityHistory`: Ring buffer of last 60 frames of rates (for safety checks).
 
-### Success Metric
-The system allows the user to input "A" and "B" separately. Region 2 initially remains chaotic but eventually forms a distinct shape "C" that represents the combination of A and B.
+### 2.3 Constants & Parameter Defaults
+Use these values to prevent tuning instability.
 
----
-
-## Phase 2: Temporal Dynamics (Sequence Learning)
-
-**Goal:** Enable the network to predict future states based on past states (Time-series prediction).
-
-### Concept
-Current bonds are springs ($F_{AB} = -F_{BA}$). This is static. To learn sequences (e.g., spelling "H-E-L-L-O"), we need **Asymmetric Coupling**, where Particle A triggers Particle B, but B does not immediately pull back on A.
-
-### Technical Specifications
-
-#### 1. Directed Interaction Matrix
-The `memoryMatrix` currently stores scalar distance $r_0$. We need to encode directionality.
-*   **Idea:** Use the sign bit or split into two matrices (`forwardMatrix` and `feedbackMatrix`).
-*   **Logic:** If $M_{ij} > 0$, $i \to j$. If $M_{ji} \approx 0$, it is a directed edge.
-
-#### 2. Activation Wave Propagation (Delay Differential Equation)
-Information must travel physically across the cloud.
 ```typescript
-// Inside Physics Loop
-// currentActivation[i] is the energy state
-// delayedActivation[i] acts as the "Memory Trace"
-
-// Force calculation:
-const drive = couplingStrength * delayedActivation[j];
-currentActivation[i] += drive;
-
-// Update Delay Buffer
-delayedActivation[i] = lerp(delayedActivation[i], currentActivation[i], 0.1);
+export const CONSTANTS = {
+  // Physics
+  couplingDecay: 4.0,
+  baseStiffness: 0.8,
+  
+  // Learning
+  basePlasticity: 0.02,
+  noiseScale: 0.1,
+  consolidationThreshold: 0.05, // Temp < 0.05 triggers save
+  
+  // Temporal
+  delayAlpha: 0.1,        // Activation smoothing
+  stdpWindow: 0.050,      // 50ms (in seconds)
+  
+  // Logic
+  ampThresholdOn: 0.8,    // Hysteresis ON
+  ampThresholdOff: 0.4,   // Hysteresis OFF
+  
+  // Optimization
+  gridCellSize: 6.0,      // ~1.5x couplingDecay
+  spatialRefreshRate: 10, // Frames
+};
 ```
 
-#### 3. Sequence Training Mode
-Instead of static images, we feed a stream of targets:
-`Target(t0) = "A"` -> `Target(t1) = "B"` -> `Target(t2) = "C"`.
-Plasticity is only enabled for bonds connecting currently active nodes to *recently* active nodes (Spike-Timing-Dependent Plasticity - STDP).
+---
 
-### Success Metric
-After training on "A -> B", stimulating the network with "A" automatically triggers the formation of "B" in the absence of external target forces.
+## 3. Implementation Phases (Sprint Plan)
+
+### Sprint 0: Semantic Layering (Architecture)
+**Goal:** Partition particles and enforce inhibition rules.
+
+**Implementation Guide:**
+1.  **Init:** Region 0 (0-25%), Region 1 (25-50%), Region 2 (50-100%).
+2.  **Gating:** 
+    *   Block 0↔1 coupling.
+    *   Harden 0↔0 and 1↔1 bonds (`stiffness * 5.0`).
+3.  **Visuals:** Cyan (0), Pink (1), Gold (2).
+
+**Acceptance Criteria:**
+*   Driving Input A causes < 5% activation change in Region 1.
+*   Region 2 acts as the only physical bridge.
 
 ---
 
-## Phase 3: Logic Gates via Wave Interference (Quantum Computing)
+### Sprint 1: Reward-Modulated Plasticity (Agency)
+**Goal:** Teacher Mode, Temperature mapping, and Data Persistence.
 
-**Goal:** Perform boolean logic using the vibrational phase $\phi$ (Simulated Quantum Effects).
+**Implementation Guide:**
+1.  **Teacher API:**
+    *   `setFeedback(-1)`: Sets `meanError = 1.0` (Force High Temp).
+    *   `setFeedback(1)`: Sets `meanError = 0.0` (Force Low Temp).
+2.  **Temperature Logic:**
+    ```typescript
+    const T = Math.min(1.0, Math.max(0.0, (err - baseline) * gain));
+    if (T > 0.6) v[k] += (Math.random() - 0.5) * CONSTANTS.noiseScale * T; // Agitation
+    ```
+3.  **Snapshot Schema:**
+    ```typescript
+    interface Snapshot {
+      version: 1,
+      timestamp: number,
+      data: {
+        memoryMatrix: Float32Array,
+        forwardMatrix: Float32Array, // Added
+        phase: Float32Array,
+        spin: Float32Array
+        // Do NOT save x/v (allow inference to reconstruct state)
+      }
+    }
+    ```
 
-### Concept
-We track a phase angle $\phi$ for every particle. By utilizing **Constructive Interference** (phases align) and **Destructive Interference** (phases oppose), we can build XOR, AND, and OR gates without digital transistors.
-
-### Technical Specifications
-
-#### 1. Phase Locking Inputs
-*   **Logic 1:** Force Region 0 particles to $\phi = 0$.
-*   **Logic 0:** Force Region 0 particles to $\phi = \pi$ (180 degrees).
-
-#### 2. Detector Nodes (Superposition)
-Designate a cluster in Region 2 as the "Detector." The activation of these particles is no longer just spatial stress, but wave amplitude:
-
-$$ Amplitude_i = \left| \sum_{j \in neighbors} e^{i \phi_j} \right| $$
-
-*   **IN-PHASE ($0 + 0$):** Amplitude = 2.0 (High Energy -> Logic 1).
-*   **OUT-OF-PHASE ($0 + \pi$):** Amplitude = 0.0 (Zero Energy -> Logic 0).
-
-#### 3. XOR Gate Implementation
-The hardest gate for single-layer networks is XOR.
-*   Config: A and B connect to Output.
-*   If A=1, B=0 -> Signal passes.
-*   If A=0, B=1 -> Signal passes.
-*   If A=1, B=1 -> Signals interfere destructively -> Output is 0.
-
-### Success Metric
-The cloud successfully computes an XOR operation purely through vibrational dynamics, visualized by color (Red/Blue phase interference).
-
----
-
-## Phase 4: Reward-Modulated Plasticity (Reinforcement Learning)
-
-**Goal:** Give the AI "Agency" to learn tasks without hardcoded answers.
-
-### Concept
-Currently, `plasticity` is a manual toggle. We will automate this using a global **Free Energy / Reward Signal**. The network "boils" (high temp) when wrong and "freezes" (low temp) when right.
-
-### Technical Specifications
-
-#### 1. The Error Function (The Critic)
-We need a way to grade the output without forcing positions.
-```typescript
-function calculateError(outputRegion: Float32Array, idealShape: Float32Array) {
-   // Hausdorff Distance or simple Centroid Matching
-   return distance;
-}
-```
-
-#### 2. Simulated Annealing (Dopamine Control)
-Introduce a global variable `Temperature` ($T$).
-*   **High Error:** $T \to 1.0$.
-    *   Inject random velocity noise (Agitation).
-    *   Increase Plasticity ($\eta$ high). Bonds break and reform rapidly.
-*   **Low Error:** $T \to 0.0$.
-    *   Reduce noise.
-    *   Decrease Plasticity ($\eta \to 0$). Bonds harden.
-
-#### 3. Hebbian Consolidation
-When $T$ drops below a threshold (success), the current `memoryMatrix` is snapshot-saved to long-term storage ("Skill Acquisition").
-
-### Success Metric
-We present "1 + 1" to the inputs. We grade the output. Initially, the cloud is random. Over 30 seconds of "Hot/Cold" feedback, the cloud self-organizes into a stable "2" shape to minimize the system temperature.
+**Acceptance Criteria:**
+*   "Wrong" button visibly increases velocity variance.
+*   "Correct" button halts motion and triggers console log "Snapshot Saved".
 
 ---
 
-## Recommendations for Immediate Implementation
+### Sprint 2: Temporal Dynamics (Prediction)
+**Goal:** Asymmetric coupling and STDP using wall-clock time.
 
-The most practical path to demonstrating "Intelligence" rather than just "Physics" is a hybrid of **Phase 1** and **Phase 4**.
+**Implementation Guide:**
+1.  **Drive:** `drive = couplingStrength * delayedActivation[j]`.
+2.  **STDP:**
+    ```typescript
+    // Must use performance.now() / 1000.0 for seconds
+    const dt = lastActiveTime[j] - lastActiveTime[i]; 
+    if (dt > 0 && dt < CONSTANTS.stdpWindow) {
+       forwardMatrix[j*count + i] += plasticityEffective;
+    }
+    ```
 
-**The "Teaching Simulation" Build:**
-1.  Implement **Semantic Layering** (Inputs vs. Computation Cloud).
-2.  Implement **Reward-Modulated Plasticity**.
-3.  **User Experience:** The user acts as the teacher.
-    *   User presses "Correct": System freezes weights (Dopamine hit).
-    *   User presses "Wrong": System heats up and scrambles (Cortical agitation).
-    
-This creates a tangible, interactive AI that clearly demonstrates the Free Energy Principle in real-time.
+**Acceptance Criteria:**
+*   Train A->B.
+*   Stimulate A. B forms in Region 2 with > 80% overlap without external drive.
+
+---
+
+### Sprint 3: Quantum Logic (Computation)
+**Goal:** Detector clusters and hysteresis-based logic.
+
+**Implementation Guide:**
+1.  **Detector Selection:** Select particles in Region 2 (indices `N*0.6` to `N*0.7`) as the "Detector Cluster".
+2.  **Logic:**
+    ```typescript
+    // Complex Amplitude
+    const amp = Math.sqrt(real*real + imag*imag);
+    // Hysteresis
+    if (amp > CONSTANTS.ampThresholdOn) activation[k] = 1.0;
+    else if (amp < CONSTANTS.ampThresholdOff) activation[k] = 0.0;
+    ```
+
+**Acceptance Criteria:**
+*   Visual XOR truth table matches (00->0, 01->1, 10->1, 11->0).
+
+---
+
+### Sprint 4: Optimization & Scaling
+**Goal:** Scale to N > 2000.
+
+**Implementation Guide:**
+1.  **Spatial Index:** 
+    *   Use Uniform Grid with `cell_size = CONSTANTS.gridCellSize`.
+    *   Rebuild neighbors every `CONSTANTS.spatialRefreshRate` frames.
+2.  **WebWorker:** Offload physics. Post `Matrix4` array back to main thread.
+
+**Acceptance Criteria:**
+*   FPS > 30 at N = 2000.
+
+---
+
+## 4. Testing, Telemetry & Safety Strategy
+
+### 4.1 Deterministic Testing
+To ensure reproducible CI runs:
+*   **RNG:** Use a seedable generator (e.g., mulberry32) for particle initialization and noise.
+*   **Time:** Mock `performance.now` in test harnesses.
+
+### 4.2 Automated Safety Protocols (The "Circuit Breaker")
+In `useFrame`:
+1.  Push `plasticityRate` to `plasticityHistory`.
+2.  **Rule:** If `avg(plasticityHistory)` > 0.25 for 60 frames (1 sec):
+    *   Action: Force `Temperature *= 0.5` (Cool Down).
+    *   Log: "Safety Trigger: Runaway Plasticity detected."
+
+### 4.3 Automated Tests
+1.  **Region Enforcement:** Region 1 activation < 0.1 when driving Region 0.
+2.  **Snapshot Integrity:** Save -> Load -> Checksum match of matrices.
+3.  **Logic Gate Truth Table:** 4/4 correct states.
+
+---
+
+## 5. Agent Reporting Template
+
+For each PR/Task:
+1.  **Summary:** One-line description.
+2.  **Files Changed:** List.
+3.  **Code Diff Summary:** Key logic.
+4.  **Test Results:** Pass/Fail + Metrics.
+5.  **Telemetry Snapshot:** `meanError`, `Temperature`, `plasticityRate`, `FPS`.
+6.  **Next Recommended Task.**
