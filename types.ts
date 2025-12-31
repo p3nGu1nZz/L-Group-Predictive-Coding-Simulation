@@ -20,7 +20,8 @@ export interface SimulationParams {
   targetRegion: number; // -1 = All, 0 = Region A, 1 = Region B
   memoryResetTrigger: number; 
   memoryAction: MemoryAction; 
-  paused: boolean; 
+  paused: boolean;
+  showRegions: boolean; 
 }
 
 export interface ParticleData {
@@ -68,4 +69,5 @@ export const DEFAULT_PARAMS: SimulationParams = {
   memoryResetTrigger: 0,
   memoryAction: { type: 'idle', slot: 0, triggerId: 0 },
   paused: false,
+  showRegions: false,
 };
