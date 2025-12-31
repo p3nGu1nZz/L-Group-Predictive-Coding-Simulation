@@ -167,18 +167,28 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     } else if (type === 'load') {
         const snapshot = memoryBank.current.get(slot);
         if (snapshot && data.current.memoryMatrix) {
-            // Restore complete quantum state
+            // 1. Restore the Generative Model (Weights & Expectations)
             data.current.memoryMatrix.set(snapshot.matrix);
-            data.current.x.set(snapshot.x);
-            // We zero out velocity to prevent kinetic explosion upon teleportation
-            data.current.v.fill(0); 
-            data.current.phase.set(snapshot.phase);
-            data.current.spin.set(snapshot.spin);
             data.current.target.set(snapshot.target);
             data.current.hasTarget.set(snapshot.hasTarget);
-            data.current.activation.set(snapshot.activation);
             
-            console.log(`Loaded quantum state from Slot ${slot}`);
+            // 2. Restore Quantum Internal State (Phase & Spin) - "Hidden States"
+            data.current.phase.set(snapshot.phase);
+            data.current.spin.set(snapshot.spin);
+            data.current.activation.set(snapshot.activation);
+
+            // 3. DO NOT Restore Position (x) directly.
+            // By NOT setting x, we force the network to "Infer" the state via Free Energy Minimization.
+            // This aligns with the PCN framework where dynamics drive the system to the attractor.
+            // data.current.x.set(snapshot.x); // <--- REMOVED
+            
+            // 4. Inject Thermal Noise (Entropy) to facilitate transition
+            // This simulates "fuzzy moving" / destabilization of the previous state.
+            for(let i=0; i<data.current.v.length; i++) {
+                data.current.v[i] = (Math.random() - 0.5) * 0.5;
+            }
+            
+            console.log(`Loaded quantum state from Slot ${slot} (Inference Initiated)`);
         }
     }
   }, [params.memoryAction]);
