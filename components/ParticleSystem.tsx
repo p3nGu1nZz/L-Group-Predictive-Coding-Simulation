@@ -3,20 +3,13 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { SimulationParams, ParticleData } from '../types';
 
-// Add missing JSX types for Three.js elements
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      instancedMesh: any;
-      sphereGeometry: any;
-      meshStandardMaterial: any;
-      torusGeometry: any;
-      meshBasicMaterial: any;
-      lineSegments: any;
-      lineBasicMaterial: any;
-    }
-  }
-}
+// Workaround for missing JSX types in current environment
+const InstancedMesh = 'instancedMesh' as any;
+const SphereGeometry = 'sphereGeometry' as any;
+const MeshStandardMaterial = 'meshStandardMaterial' as any;
+const MeshBasicMaterial = 'meshBasicMaterial' as any;
+const LineSegments = 'lineSegments' as any;
+const LineBasicMaterial = 'lineBasicMaterial' as any;
 
 interface ParticleSystemProps {
   params: SimulationParams;
@@ -102,15 +95,27 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
       memoryMatrix: new Float32Array(memorySize).fill(-1), 
     };
 
-    // Initialize random cloud
-    for (let i = 0; i < count; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos((Math.random() * 2) - 1);
-      const r = 8 * Math.cbrt(Math.random()); 
+    // Initialize using Fibonacci Sphere algorithm for even distribution
+    // This avoids the "pole clumping" seen in standard spherical coordinates
+    const phi = Math.PI * (3 - Math.sqrt(5)); // Golden angle
 
-      data.current.x[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      data.current.x[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      data.current.x[i * 3 + 2] = r * Math.cos(phi);
+    for (let i = 0; i < count; i++) {
+      // y goes from 1 to -1
+      const y = 1 - (i / (count - 1)) * 2; 
+      // radius at this y
+      const radiusAtY = Math.sqrt(1 - y * y); 
+      const theta = phi * i;
+
+      const x = Math.cos(theta) * radiusAtY;
+      const z = Math.sin(theta) * radiusAtY;
+
+      // Distribute radially (shell vs volume)
+      // Cube root gives uniform volume distribution, but let's keep it somewhat shell-like for better visibility
+      const r = 8 * Math.cbrt(Math.random() * 0.5 + 0.5); 
+
+      data.current.x[i * 3] = x * r;
+      data.current.x[i * 3 + 1] = y * r;
+      data.current.x[i * 3 + 2] = z * r;
 
       data.current.phase[i] = Math.random() * Math.PI * 2;
       data.current.spin[i] = Math.random() > 0.5 ? 0.5 : -0.5;
@@ -152,7 +157,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     }
   }, [params.memoryResetTrigger]);
 
-  // 4. Handle Sensory Input (Greedy Assignment)
+  // 4. Handle Sensory Input (Global Optimal Assignment)
   useEffect(() => {
     const count = params.particleCount;
     const { positions, count: pointCount } = textToPoints(params.inputText);
@@ -160,47 +165,78 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     data.current.hasTarget.fill(0);
 
     if (pointCount > 0) {
-        const assignedParticles = new Set<number>();
         const currentPositions = data.current.x;
-        const pointsToUse = Math.min(count, pointCount);
-        const samplingRatio = pointCount > count ? pointCount / count : 1;
-
-        for (let i = 0; i < pointsToUse; i++) {
-          const sourceIndex = Math.floor(i * samplingRatio);
-          const tx = positions[sourceIndex * 3];
-          const ty = positions[sourceIndex * 3 + 1];
-          const tz = positions[sourceIndex * 3 + 2];
-
-          let minDist = Infinity;
-          let bestPid = -1;
-
-          for (let p = 0; p < count; p++) {
-            if (assignedParticles.has(p)) continue;
-
-            const px = currentPositions[p * 3];
-            const py = currentPositions[p * 3 + 1];
-            const pz = currentPositions[p * 3 + 2];
-
-            const distSq = (px - tx)**2 + (py - ty)**2 + (pz - tz)**2;
-            
-            if (distSq < minDist) {
-              minDist = distSq;
-              bestPid = p;
+        
+        // A. Prepare Targets
+        const targets: {x: number, y: number, z: number}[] = [];
+        if (pointCount > count) {
+            // Downsample with stride to preserve shape
+            const step = pointCount / count;
+            for (let i = 0; i < count; i++) {
+                const idx = Math.floor(i * step);
+                targets.push({
+                    x: positions[idx * 3],
+                    y: positions[idx * 3 + 1],
+                    z: positions[idx * 3 + 2]
+                });
             }
-          }
+        } else {
+            // Use all target points
+            for (let i = 0; i < pointCount; i++) {
+                targets.push({
+                    x: positions[i * 3],
+                    y: positions[i * 3 + 1],
+                    z: positions[i * 3 + 2]
+                });
+            }
+        }
 
-          if (bestPid !== -1) {
-            assignedParticles.add(bestPid);
-            data.current.target[bestPid * 3] = tx;
-            data.current.target[bestPid * 3 + 1] = ty;
-            data.current.target[bestPid * 3 + 2] = tz;
-            data.current.hasTarget[bestPid] = 1;
-            data.current.activation[bestPid] = 1.0;
-          }
+        // B. Global Minimum Distance Assignment
+        const edges: { pIdx: number, tIdx: number, cost: number }[] = [];
+        
+        for (let i = 0; i < count; i++) {
+           const px = currentPositions[i * 3];
+           const py = currentPositions[i * 3 + 1];
+           const pz = currentPositions[i * 3 + 2];
+           
+           for(let j = 0; j < targets.length; j++) {
+              const tx = targets[j].x;
+              const ty = targets[j].y;
+              const tz = targets[j].z;
+              const distSq = (px - tx)**2 + (py - ty)**2 + (pz - tz)**2;
+              
+              // Push edge
+              edges.push({ pIdx: i, tIdx: j, cost: distSq });
+           }
+        }
+        
+        // Sort all potential connections by distance (closest first)
+        edges.sort((a,b) => a.cost - b.cost);
+        
+        const assignedParticles = new Set<number>();
+        const assignedTargets = new Set<number>();
+        
+        // Fill assignments based on shortest available links
+        for (const edge of edges) {
+           // If we have assigned all targets, stop
+           if (assignedTargets.size === targets.length) break;
+           
+           // If neither particle nor target is taken, assign them
+           if (!assignedParticles.has(edge.pIdx) && !assignedTargets.has(edge.tIdx)) {
+              assignedParticles.add(edge.pIdx);
+              assignedTargets.add(edge.tIdx);
+              
+              const t = targets[edge.tIdx];
+              data.current.target[edge.pIdx * 3] = t.x;
+              data.current.target[edge.pIdx * 3 + 1] = t.y;
+              data.current.target[edge.pIdx * 3 + 2] = t.z;
+              data.current.hasTarget[edge.pIdx] = 1;
+              data.current.activation[edge.pIdx] = 1.0;
+           }
         }
     }
 
-    // Visual guide update
+    // Visual guide update (Ghost System)
     if (ghostRef.current) {
       const dummyObj = new THREE.Object3D();
       dummyObj.scale.set(0,0,0);
@@ -241,6 +277,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     const count = params.particleCount;
     const { x, v, phase, activation, target, hasTarget, memoryMatrix } = data.current;
     
+    // Adaptive Physics Logic
+    // When plasticity is ON (learning mode), we:
+    // 1. Lower the stiffness significantly so particles aren't held back by previous bonds
+    // 2. Increase effective gravity so they snap to the text
+    const isLearning = plasticity > 0;
+    const adaptiveStiffness = isLearning ? stiffness * 0.2 : stiffness;
+    const adaptiveGravity = isLearning ? Math.max(dataGravity, 0.6) : dataGravity;
+
     let lineIndex = 0;
     const linePositions = linesRef.current.geometry.attributes.position.array as Float32Array;
     const lineColors = linesRef.current.geometry.attributes.color.array as Float32Array;
@@ -281,7 +325,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         let r0 = memoryMatrix[memIndex];
         
         // Plasticity: Learn current distance
-        if (plasticity > 0 && couplingStrength > 0.05) {
+        // Only learn if connected strongly enough
+        if (isLearning && couplingStrength > 0.05) {
             // If unset, init to current distance or default
             if (r0 === -1) r0 = dist; 
             // Smoothly interpolate memory towards current distance
@@ -295,7 +340,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         // Force: Spring + Vibrational Modulation
         // weight is higher if particles are phase-synced
         const weight = couplingStrength * (0.6 + 0.4 * vibrationalModulation); 
-        const forceMag = stiffness * (dist - r0) * weight;
+        const forceMag = adaptiveStiffness * (dist - r0) * weight;
         
         stress += Math.abs(forceMag);
 
@@ -352,9 +397,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         const dy = ty - iy;
         const dz = tz - iz;
         
-        fx += dx * dataGravity;
-        fy += dy * dataGravity;
-        fz += dz * dataGravity;
+        fx += dx * adaptiveGravity;
+        fy += dy * adaptiveGravity;
+        fz += dz * adaptiveGravity;
       }
 
       // 3. Integration
@@ -411,19 +456,19 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
 
   return (
     <>
-      <instancedMesh ref={ghostRef} args={[undefined, undefined, params.particleCount]}>
-        <sphereGeometry args={[1, 8, 8]} />
-        <meshBasicMaterial color="#ffffff" transparent opacity={0.1} wireframe />
-      </instancedMesh>
+      <InstancedMesh ref={ghostRef} args={[undefined, undefined, params.particleCount]}>
+        <SphereGeometry args={[1, 8, 8]} />
+        <MeshBasicMaterial color="#ffffff" transparent opacity={0.1} wireframe />
+      </InstancedMesh>
 
-      <instancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
-        <sphereGeometry args={[0.3, 16, 16]} />
-        <meshStandardMaterial roughness={0.2} metalness={0.8} />
-      </instancedMesh>
+      <InstancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
+        <SphereGeometry args={[0.3, 16, 16]} />
+        <MeshStandardMaterial roughness={0.2} metalness={0.8} />
+      </InstancedMesh>
 
-      <lineSegments ref={linesRef} geometry={lineGeometry}>
-        <lineBasicMaterial vertexColors={true} transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} />
-      </lineSegments>
+      <LineSegments ref={linesRef} geometry={lineGeometry}>
+        <LineBasicMaterial vertexColors={true} transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} />
+      </LineSegments>
     </>
   );
 };

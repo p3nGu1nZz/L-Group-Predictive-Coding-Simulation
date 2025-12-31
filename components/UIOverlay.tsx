@@ -33,6 +33,26 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
     handleChange('memoryResetTrigger', params.memoryResetTrigger + 1);
   };
 
+  // Adaptive Control Logic for Plasticity
+  const togglePlasticity = (active: boolean) => {
+      if (active) {
+          // Adaptive: Set optimal parameters for learning
+          setParams(prev => ({
+              ...prev,
+              plasticity: 0.1,
+              damping: 0.95, // High damping to prevent chaotic oscillation during formation
+              dataGravity: Math.max(prev.dataGravity, 0.5) // Ensure enough gravity to pull shape
+          }));
+      } else {
+          // Adaptive: Restore parameters for recall/stability
+          setParams(prev => ({
+              ...prev,
+              plasticity: 0,
+              damping: 0.85, // Lower damping for natural movement
+          }));
+      }
+  };
+
   const handleMemoryAction = (type: 'save' | 'load', slot: number) => {
     setParams(prev => ({
       ...prev,
@@ -49,7 +69,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
         {/* 1. Data Input */}
         <div className="mb-4 bg-cyan-900/20 p-3 rounded-lg border border-cyan-500/30">
           <h2 className="text-[10px] font-bold uppercase tracking-widest text-cyan-300 mb-2">1. Encode Data</h2>
-          <form onSubmit={handleTextSubmit} className="flex gap-2">
+          <form onSubmit={handleTextSubmit} className="flex gap-2 mb-2">
             <input 
               type="text" 
               value={localText}
@@ -62,8 +82,26 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
               INPUT
             </button>
           </form>
+          
+          {/* Data Gravity Slider moved here for context */}
+          <div className="mb-2 pt-2 border-t border-cyan-500/20">
+            <div className="flex justify-between text-[10px] mb-1">
+              <span className="font-mono text-cyan-200">Data Gravity</span>
+              <span className="text-cyan-300">{params.dataGravity.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min="0.0"
+              max="1.0"
+              step="0.01"
+              value={params.dataGravity}
+              onChange={(e) => handleChange('dataGravity', parseFloat(e.target.value))}
+              className="w-full h-1 bg-cyan-900/50 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+            />
+          </div>
+
           {params.inputText && (
-               <button onClick={clearInput} className="w-full mt-2 bg-red-500/20 hover:bg-red-500/40 text-red-200 text-[10px] py-1 rounded transition-colors">
+               <button onClick={clearInput} className="w-full bg-red-500/20 hover:bg-red-500/40 text-red-200 text-[10px] py-1 rounded transition-colors">
                  Remove Input (Enter Recall Mode)
                </button>
           )}
@@ -92,18 +130,21 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
 
             <div className="flex items-center gap-2 mb-2">
                <button 
-                  onClick={() => handleChange('plasticity', 0.1)} 
+                  onClick={() => togglePlasticity(true)} 
                   className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity > 0 ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-300'}`}
                >
                   ON
                </button>
                <button 
-                  onClick={() => handleChange('plasticity', 0)} 
+                  onClick={() => togglePlasticity(false)} 
                   className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity === 0 ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500'}`}
                >
                   OFF
                </button>
             </div>
+            <p className="text-[9px] text-yellow-500/60 text-center italic">
+                {params.plasticity > 0 ? "Optimizing parameters for learning..." : "Standard physics active"}
+            </p>
         </div>
 
         {/* 3. Memory Bank (New) */}
@@ -162,22 +203,6 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams }) => {
 
         {/* Physics Controls */}
         <div className="space-y-4">
-          <div>
-            <div className="flex justify-between text-[10px] mb-1">
-              <span className="font-mono text-gray-300">Observation Gain (Gravity)</span>
-              <span className="text-cyan-300">{params.dataGravity.toFixed(2)}</span>
-            </div>
-            <input
-              type="range"
-              min="0.0"
-              max="1.0"
-              step="0.01"
-              value={params.dataGravity}
-              onChange={(e) => handleChange('dataGravity', parseFloat(e.target.value))}
-              className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-            />
-          </div>
-
           <div>
             <div className="flex justify-between text-[10px] mb-1">
               <span className="font-mono text-gray-300">Damping (Friction)</span>

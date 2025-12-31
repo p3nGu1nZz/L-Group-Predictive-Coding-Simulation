@@ -4,16 +4,10 @@ import { OrbitControls, Stars } from '@react-three/drei';
 import ParticleSystem from './ParticleSystem';
 import { SimulationParams } from '../types';
 
-// Add missing JSX types for Three.js elements
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      color: any;
-      ambientLight: any;
-      pointLight: any;
-    }
-  }
-}
+// Workaround for missing JSX types in current environment
+const Color = 'color' as any;
+const AmbientLight = 'ambientLight' as any;
+const PointLight = 'pointLight' as any;
 
 interface SimulationCanvasProps {
   params: SimulationParams;
@@ -27,12 +21,12 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ params }) => {
         gl={{ antialias: true, alpha: false }}
         dpr={[1, 2]}
       >
-        <color attach="background" args={['#050810']} />
+        <Color attach="background" args={['#050810']} />
         
         {/* Ambient setup */}
-        <ambientLight intensity={0.4} />
-        <pointLight position={[10, 10, 10]} intensity={1} />
-        <pointLight position={[-10, -10, -10]} intensity={0.5} color="blue" />
+        <AmbientLight intensity={0.4} />
+        <PointLight position={[10, 10, 10]} intensity={1} />
+        <PointLight position={[-10, -10, -10]} intensity={0.5} color="blue" />
         
         <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
         
