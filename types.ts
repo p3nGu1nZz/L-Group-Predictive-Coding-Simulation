@@ -22,6 +22,7 @@ export interface SimulationParams {
   memoryAction: MemoryAction; 
   paused: boolean;
   showRegions: boolean; 
+  chaosMode: boolean; // New flag for entropy injection
 }
 
 export interface ParticleData {
@@ -55,19 +56,20 @@ export const CONSTANTS = {
 };
 
 export const DEFAULT_PARAMS: SimulationParams = {
-  particleCount: 800, 
+  particleCount: 1200, 
   equilibriumDistance: 1.0, 
   stiffness: CONSTANTS.baseStiffness,
   couplingDecay: CONSTANTS.couplingDecay,
   phaseSyncRate: 0.05,
   spatialLearningRate: 0.05,
-  dataGravity: 0.2, 
+  dataGravity: 0.15, 
   plasticity: 0.0, 
-  damping: 0.80, 
-  inputText: "",
+  damping: 0.85, 
+  inputText: "QUANTUM",
   targetRegion: -1, // Default to Global
   memoryResetTrigger: 0,
   memoryAction: { type: 'idle', slot: 0, triggerId: 0 },
   paused: false,
   showRegions: false,
+  chaosMode: false, // Default to False so we see structure immediately
 };

@@ -5,8 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>L-Group Predictive Coding Simulation</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
     <style>
-      body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-color: #050505; color: white; }
+      body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-color: #020205; color: white; font-family: 'Rajdhani', sans-serif; }
+      
+      /* Cyberpunk Scrollbar */
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: #000; }
+      ::-webkit-scrollbar-thumb { background: #06b6d4; border-radius: 3px; }
+
+      /* CRT Scanline Effect */
+      .scanlines {
+        background: linear-gradient(
+          to bottom,
+          rgba(255,255,255,0),
+          rgba(255,255,255,0) 50%,
+          rgba(0,0,0,0.2) 50%,
+          rgba(0,0,0,0.2)
+        );
+        background-size: 100% 4px;
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        pointer-events: none;
+        z-index: 10;
+        opacity: 0.6;
+      }
     </style>
   <script type="importmap">
 {
@@ -18,7 +43,9 @@
     "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
     "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.1?external=react,react-dom,three",
     "@react-three/drei": "https://esm.sh/@react-three/drei@9.105.6?external=react,react-dom,three,@react-three/fiber",
-    "three": "https://esm.sh/three@0.164.1"
+    "three": "https://esm.sh/three@0.164.1",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.2?external=react,react-dom,three,@react-three/fiber",
+    "postprocessing": "https://esm.sh/postprocessing@6.35.4?external=three"
   }
 }
 </script>
