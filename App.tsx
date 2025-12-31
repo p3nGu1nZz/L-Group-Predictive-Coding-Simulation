@@ -26,16 +26,13 @@ const textToPoints = (text: string): { positions: Float32Array, count: number } 
   const L = text.length;
 
   // Robust Inverse-Power Scaling
-  // Replaced sigmoid with stable scaling to handle 1 char to 30+ chars smoothly.
-  // Logic: Area roughly constant => Font Size ~ 1/sqrt(L)
   const maxFontSize = 340;
   const minFontSize = 50;
   
-  // Power 0.45 provides a slightly gentler falloff than pure sqrt (0.5), keeping short words punchy.
   const fontSize = Math.max(minFontSize, maxFontSize / Math.pow(L, 0.45));
 
   const width = 2048; 
-  const height = 1024; // Increased canvas height to safely contain large singular glyphs
+  const height = 1024; 
   canvas.width = width;
   canvas.height = height;
 
@@ -51,8 +48,6 @@ const textToPoints = (text: string): { positions: Float32Array, count: number } 
   const points: number[] = [];
   const step = 2; 
   
-  // Scale factor to fit text within the simulation view
-  // 0.04 matches the pixel density to world units (approx 100px = 4 units)
   const scale = 0.04; 
 
   for (let y = 0; y < height; y += step) {
@@ -78,9 +73,9 @@ interface ParticleSystemProps {
 interface MemorySnapshot {
   matrix: Float32Array;
   x: Float32Array;
-  v: Float32Array; // Save velocity to preserve momentum state? Usually better to dampen on load.
-  phase: Float32Array; // Save Quantum Phase
-  spin: Float32Array; // Save Quantum Spin
+  v: Float32Array; 
+  phase: Float32Array; 
+  spin: Float32Array; 
   target: Float32Array;
   hasTarget: Uint8Array;
   activation: Float32Array;
@@ -125,19 +120,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
       memoryMatrix: new Float32Array(memorySize).fill(-1), 
     };
 
-    // Refined Fibonacci Sphere Distribution for Uniform Volume
-    // Uses open interval (i + 0.5) to avoid stacking at poles and ensures
-    // even spatial sampling before applying radial jitter.
+    // Refined Fibonacci Sphere Distribution
     const phi = Math.PI * (3 - Math.sqrt(5)); // Golden Angle
     
     for (let i = 0; i < count; i++) {
-        // Open interval mapping: y goes from close to 1 to close to -1
         const y = 1 - (i + 0.5) * (2 / count); 
         const radiusAtY = Math.sqrt(1 - y * y); 
         const theta = phi * i; 
         
-        // Uniform volume distribution requires r ~ cbrt(random)
-        // We scale to 14.0 to fill the view slightly more robustly
         const r = 14.0 * Math.cbrt(Math.random()); 
         
         data.current.x[i * 3] = Math.cos(theta) * radiusAtY * r;
@@ -149,7 +139,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     }
     
     memoryBank.current.clear();
-    systemState.current.meanError = 10.0; // Reset error on init
+    systemState.current.meanError = 10.0; 
 
   }, [params.particleCount]);
 
@@ -236,14 +226,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         
         // 2. Spatial Indexing (Morton Codes / Z-Order Curve)
         const getMortonCode = (x: number, y: number, z: number) => {
-            // Map approximate bounds [-30, 30] to [0, 1023] (10 bits)
             const map = (v: number) => Math.floor(Math.max(0, Math.min(1023, (v + 30) * 17)));
             
             let xx = map(x);
             let yy = map(y);
             let zz = map(z);
 
-            // Interleave bits to create Z-order curve
             xx = (xx | (xx << 16)) & 0x030000FF;
             xx = (xx | (xx <<  8)) & 0x0300F00F;
             xx = (xx | (xx <<  4)) & 0x030C30C3;
@@ -272,7 +260,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
             code: getMortonCode(t.x, t.y, t.z)
         }));
 
-        // Sort both lists by spatial code
         pIndices.sort((a, b) => a.code - b.code);
         tIndices.sort((a, b) => a.code - b.code);
 
@@ -365,8 +352,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     const count = params.particleCount;
     const { x, v, phase, activation, target, hasTarget, memoryMatrix } = data.current;
     
-    // Check if we have active targets (either from live input OR from a recalled memory)
-    // This decouples physics from the UI input box, ensuring recalled shapes stay stable.
     let activeTargetCount = 0;
     for(let k = 0; k < count; k++) {
         if(hasTarget[k] === 1) activeTargetCount++;
@@ -398,8 +383,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     // --- 2. Adaptive Parameters (Physics Engine) ---
     
     const currentError = systemState.current.meanError;
-    
-    // Normalized progress of shape formation: 0.0 (High Error) -> 1.0 (Low Error/Formed)
     const formationProgress = Math.max(0, Math.min(1.0, 1.0 - (currentError / 12.0)));
     systemState.current.formationProgress = formationProgress;
 
@@ -408,23 +391,19 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
 
     if (hasActiveTargets) {
         if (currentError > 4.0) {
-            // High Deviation: Boost rate to converge quickly
             adaptiveRateScale = 1.2 + Math.min(1.8, (currentError - 4.0) * 0.15);
         } else if (currentError > 0.8) {
-            // Transition Zone: Linear scaling
             adaptiveRateScale = 0.3 + (currentError - 0.8) * 0.28; 
         } else {
-            // Near Equilibrium: Dampen rate to prevent oscillation
             adaptiveRateScale = 0.05 + currentError * 0.3;
         }
     } else {
-         // Free mode: Slight dampening based on velocity
          adaptiveRateScale = 1.0 / (1.0 + meanVelocitySq * 0.2);
     }
 
     const effectiveLearningRate = spatialLearningRate * adaptiveRateScale;
 
-    // --- NEW: DENSITY-ADAPTIVE EQUILIBRIUM ---
+    // --- Density-Adaptive Equilibrium ---
     const nominalRadius = 8.0;
     const nominalCount = 800.0;
     const currentVol = Math.max(1.0, Math.pow(meanRadius, 3));
@@ -436,41 +415,34 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
     
     const effectiveEquilibrium = equilibriumDistance * clampedDensityScale;
 
-    // Adaptive Stiffness & Gravity (Auto-Tuning for Optimal Learning)
+    // Adaptive Stiffness & Gravity
     const isLearning = plasticity > 0;
     
     let adaptiveStiffness = stiffness;
     let adaptiveGravity = dataGravity;
 
     if (hasActiveTargets) {
-        // Drastically reduce stiffness when targets are active to allow pure shape formation
         adaptiveStiffness = stiffness * 0.005; 
-        
-        // REFINED ADAPTIVE GRAVITY (Stronger Imprint)
         const baseGravity = Math.max(dataGravity, 0.1);
-        
-        // Boost gravity significantly during learning to ensure pattern lock-in
         adaptiveGravity = baseGravity * (isLearning ? 6.0 : 3.0);
     } else {
         adaptiveStiffness = isLearning ? stiffness * 0.2 : stiffness;
         adaptiveGravity = isLearning ? Math.max(dataGravity, 0.6) : dataGravity;
     }
 
-    // Adaptive Damping (Kinetic Brake)
-    let effectiveDamping = 0.90; // Default
+    // Adaptive Damping
+    let effectiveDamping = 0.90; 
 
     if (hasActiveTargets) {
-        // OVERRIDE: High viscosity for text formation
         effectiveDamping = isLearning ? 0.6 : 0.8;
     } else {
-        // Standard velocity-dependent damping for free-floating mode
         const minRetention = 0.55; 
         const maxRetention = 0.98;
         const speedFactor = Math.exp(-meanVelocitySq * 1.5);
         effectiveDamping = minRetention + (maxRetention - minRetention) * speedFactor;
     }
 
-    // REFINED Dynamic Visualization Threshold
+    // Dynamic Visualization Threshold
     const systemStress = Math.min(1.0, meanActivation);
     const systemKinetic = Math.min(1.0, meanVelocitySq * 0.5); 
     const excitation = Math.min(1.0, systemStress * 0.5 + systemKinetic * 0.5);
@@ -507,48 +479,71 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         const dz = jz - iz;
         const distSq = dx * dx + dy * dy + dz * dz;
 
-        if (distSq > couplingDecay * couplingDecay * 1.5) continue;
-        
+        // --- PAPER IMPLEMENTATION: Eq 4.4 Probabilistic Coupling ---
+        // p_ij(t) ~ exp(-d^2/sigma^2) * cos(phi_i - phi_j)
+        // We use this probability to gate BOTH the force and the visual line.
+        // This ensures that "messy" connections (close but out of phase) are suppressed.
+
         const dist = Math.sqrt(distSq);
-        if (dist < 0.001) continue;
+        if (dist < 0.001 || dist > couplingDecay * 1.5) continue; // Optimization culling
 
         const phaseDiff = phase[j] - phase[i];
-        const couplingStrength = Math.exp(-distSq / (couplingDecay * couplingDecay));
-        const vibrationalModulation = Math.cos(phaseDiff);
         
+        // 1. Calculate Probabilistic Weight (Eq 4.4)
+        // Normalized spatial decay
+        const spatialWeight = Math.exp(-distSq / (couplingDecay * couplingDecay));
+        
+        // Phase alignment reward: (1 + cos) / 2 maps [-1, 1] to [0, 1]
+        // This prevents negative probabilities while maintaining the "cosine reward" logic of the paper.
+        const phaseWeight = (1.0 + Math.cos(phaseDiff)) * 0.5;
+        
+        const couplingProb = spatialWeight * phaseWeight;
+
+        // 2. Memory & Learning Logic
         const memIndex = i * count + j;
         let r0 = memoryMatrix[memIndex];
-        
-        if (isLearning && couplingStrength > 0.05) {
+        const isLearned = r0 !== -1;
+
+        if (isLearning && couplingProb > 0.05) {
+            // A. Structural Plasticity: Update equilibrium distance
             if (r0 === -1) r0 = dist; 
             r0 = r0 + (dist - r0) * plasticity;
             memoryMatrix[memIndex] = r0;
+
+            // B. Phase Annealing: Sync phases of coupled particles to "burn in" the edge
+            // This is critical for clean recall later.
+            phaseDelta += Math.sin(phaseDiff) * plasticity * 2.0;
         }
 
         if (r0 === -1) r0 = effectiveEquilibrium;
 
+        // 3. Force Calculation
         let localStiffness = adaptiveStiffness;
-        if (dist < r0) {
-             localStiffness = Math.max(stiffness, 2.0); 
-        }
+        if (dist < r0) localStiffness = Math.max(stiffness, 2.0); 
 
-        const weight = couplingStrength * (0.6 + 0.4 * vibrationalModulation); 
-        const forceMag = localStiffness * (dist - r0) * weight;
+        // Modulate force by the probabilistic coupling. 
+        // If they are out of phase, they shouldn't pull each other strongly.
+        const effectiveForce = localStiffness * (dist - r0) * couplingProb;
         
-        stress += Math.abs(forceMag);
+        stress += Math.abs(effectiveForce);
 
         const nx = dx / dist;
         const ny = dy / dist;
         const nz = dz / dist;
 
-        fx += nx * forceMag;
-        fy += ny * forceMag;
-        fz += nz * forceMag;
+        fx += nx * effectiveForce;
+        fy += ny * effectiveForce;
+        fz += nz * effectiveForce;
 
-        if (couplingStrength > 0.1) phaseDelta += couplingStrength * Math.sin(phaseDiff);
+        // 4. Phase Synchronization (Kuramoto)
+        if (couplingProb > 0.1) phaseDelta += couplingProb * Math.sin(phaseDiff);
 
-        if (j > i && couplingStrength > connectionThreshold && lineIndex < maxConnections) {
-          const isLearned = memoryMatrix[memIndex] !== -1;
+        // 5. Visualization (Line Drawing)
+        // We prioritize showing LEARNED bonds (memory) or very strong transient bonds.
+        // This cleans up the "messy edges" by hiding weak probabilistic connections.
+        const showLine = isLearned || (couplingProb > connectionThreshold);
+        
+        if (j > i && showLine && lineIndex < maxConnections) {
           
           linePositions[lineIndex * 6] = ix;
           linePositions[lineIndex * 6 + 1] = iy;
@@ -559,22 +554,26 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
           linePositions[lineIndex * 6 + 5] = jz;
 
           let r=0.1, g=0.5, b=0.7; 
+          let alpha = 0.0;
+
           if (isLearned) {
+             // Learned bonds are Gold/Yellow
              r=1.0; g=0.84; b=0.0; 
+             // Opacity based on how close they are to the learned equilibrium
+             const err = Math.abs(dist - r0);
+             alpha = Math.max(0.3, 1.0 - err); 
           } else {
+             // Transient bonds: Dynamic Gradient
              const baseR = 0.1; const baseG = 0.2; const baseB = 0.6;
              const hotR = 0.8; const hotG = 0.9; const hotB = 1.0;
              
              r = baseR + (hotR - baseR) * excitation;
              g = baseG + (hotG - baseG) * excitation;
              b = baseB + (hotB - baseB) * excitation;
+             
+             // Opacity scales with coupling probability
+             alpha = Math.sqrt(Math.max(0, couplingProb - connectionThreshold) / (1.0 - connectionThreshold));
           }
-
-          const range = 1.0 - connectionThreshold;
-          const normalizedStrength = (couplingStrength - connectionThreshold) / range;
-          let alpha = Math.sqrt(normalizedStrength); 
-          
-          if (isLearned) alpha = Math.max(alpha, 0.5);
 
           lineColors[lineIndex * 6] = r * alpha;
           lineColors[lineIndex * 6 + 1] = g * alpha;
@@ -589,7 +588,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
       }
 
       // ** GRAVITATION & CONTROL LOGIC **
-      // Use hasTarget directly to enable persistent memory recall without input text
       if (hasTarget[i]) {
         const tx = target[i * 3];
         const ty = target[i * 3 + 1];
@@ -607,25 +605,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         const dirY = dy / (distToTarget + 0.0001);
         const dirZ = dz / (distToTarget + 0.0001);
 
-        // STABILITY UPDATE:
-        // Switched from Spring Force to Attractor Force.
-        // Instead of F = -kx (which oscillates), we use F = G * dir (which seeks).
-        // Modulated by distance only when very close to smooth arrival.
-        
         let forceMag = adaptiveGravity; 
         
-        // Spatially Adaptive Gravity
-        // If distToTarget is large, we apply a non-linear boost to pull particles in more effectively.
-        // If distToTarget is small (< 0.5), we dampen the force linearly to avoid overshooting.
-        
         if (distToTarget > 0.5) {
-            // Apply boosting for particles far from target
-            // Enhanced scaling: dist^0.6 provides stronger long-range pull than sqrt
             const distFactor = 1.0 + Math.pow(distToTarget, 0.6); 
             forceMag *= distFactor;
         } else {
-             // Ease-in for close range to prevent jitter
-             // 2.0 multiplier ensures it's still snappy right until the very end
              forceMag *= (distToTarget * 2.0); 
         }
         
@@ -633,11 +618,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params }) => {
         fy += dirY * forceMag;
         fz += dirZ * forceMag;
         
-        // Velocity Cap (Prevent Exploding Physics)
-        // Stricter cap when forming text
         const vx = v[i*3], vy = v[i*3+1], vz = v[i*3+2];
         const speedSq = vx*vx + vy*vy + vz*vz;
-        const maxSpeed = 1.0; // Reduced from 1.5 for stability
+        const maxSpeed = 1.0; 
         if (speedSq > maxSpeed * maxSpeed) {
             const scale = maxSpeed / Math.sqrt(speedSq);
             v[i*3] *= scale;
