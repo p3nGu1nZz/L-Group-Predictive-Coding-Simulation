@@ -20,7 +20,7 @@ export interface SimulationParams {
   targetRegion: number; // -1 = All, 0 = Region A, 1 = Region B
   memoryResetTrigger: number; 
   memoryAction: MemoryAction; 
-  paused: boolean; // New Flag
+  paused: boolean; 
 }
 
 export interface ParticleData {
@@ -47,15 +47,6 @@ export const CONSTANTS = {
   // Learning
   basePlasticity: 0.02,
   noiseScale: 0.1,
-  consolidationThreshold: 0.05, // Temp < 0.05 triggers save
-  
-  // Temporal
-  delayAlpha: 0.1,        // Activation smoothing
-  stdpWindow: 0.050,      // 50ms (in seconds)
-  
-  // Logic
-  ampThresholdOn: 0.8,    // Hysteresis ON
-  ampThresholdOff: 0.4,   // Hysteresis OFF
   
   // Optimization
   gridCellSize: 6.0,      // ~1.5x couplingDecay
