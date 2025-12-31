@@ -2,7 +2,7 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
-import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction } from './types';
+import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS } from './types';
 
 // --- ParticleSystem ---
 // Workaround for missing JSX types in current environment
@@ -80,6 +80,7 @@ interface MemorySnapshot {
   target: Float32Array;
   hasTarget: Uint8Array;
   activation: Float32Array;
+  regionID: Uint8Array;
 }
 
 const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
@@ -92,7 +93,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
   // Track system state for adaptive controls (prevents React render loops)
   const systemState = useRef({
       meanError: 10.0, // Start with high error assumption
-      formationProgress: 0.0
+      formationProgress: 0.0,
+      logTimer: 0
   });
 
   // We use dataRef passed from parent to share state with UI visualization
@@ -113,6 +115,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             target: new Float32Array(count * 3),
             hasTarget: new Uint8Array(count),
             memoryMatrix: new Float32Array(memorySize).fill(-1), 
+            regionID: new Uint8Array(count),
+            forwardMatrix: new Float32Array(memorySize),
+            feedbackMatrix: new Float32Array(memorySize),
+            delayedActivation: new Float32Array(count),
+            lastActiveTime: new Float32Array(count),
         };
         
         // Refined Fibonacci Sphere Distribution
@@ -131,6 +138,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
 
             data.current.phase[i] = Math.random() * Math.PI * 2;
             data.current.spin[i] = Math.random() > 0.5 ? 0.5 : -0.5;
+
+            // Region Init (Sprint 0)
+            if (i < Math.floor(count * 0.25)) data.current.regionID[i] = 0;      // Input A
+            else if (i < Math.floor(count * 0.5)) data.current.regionID[i] = 1;  // Input B
+            else data.current.regionID[i] = 2;                                   // Associative
         }
         
         memoryBank.current.clear();
@@ -155,10 +167,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
                 spin: new Float32Array(data.current.spin),
                 target: new Float32Array(data.current.target),
                 hasTarget: new Uint8Array(data.current.hasTarget),
-                activation: new Float32Array(data.current.activation)
+                activation: new Float32Array(data.current.activation),
+                regionID: new Uint8Array(data.current.regionID)
             };
             memoryBank.current.set(slot, snapshot);
-            console.log(`Saved quantum state to Slot ${slot}`);
+            console.log(`[Memory] Snapshot Saved to Slot ${slot}. | Connections: ${snapshot.matrix.filter(v=>v!==-1).length}`);
         }
     } else if (type === 'load') {
         const snapshot = memoryBank.current.get(slot);
@@ -172,6 +185,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             data.current.phase.set(snapshot.phase);
             data.current.spin.set(snapshot.spin);
             data.current.activation.set(snapshot.activation);
+            if(snapshot.regionID) data.current.regionID.set(snapshot.regionID);
 
             // 3. DO NOT Restore Position (x) directly.
             // By NOT setting x, we force the network to "Infer" the state via Free Energy Minimization.
@@ -180,11 +194,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             
             // 4. Inject Thermal Noise (Entropy) to facilitate transition
             // This simulates "fuzzy moving" / destabilization of the previous state.
+            // Reduced thermal noise to help with wobble (0.5 -> 0.2)
             for(let i=0; i<data.current.v.length; i++) {
-                data.current.v[i] = (Math.random() - 0.5) * 0.5;
+                data.current.v[i] = (Math.random() - 0.5) * 0.2; 
             }
             
-            console.log(`Loaded quantum state from Slot ${slot} (Inference Initiated)`);
+            console.log(`[Memory] Loaded Slot ${slot}. Initiating Associative Recall.`);
         }
     }
   }, [params.memoryAction]);
@@ -193,6 +208,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     if (params.memoryResetTrigger > 0) {
       if (data.current.memoryMatrix) {
         data.current.memoryMatrix.fill(-1);
+        console.log("[Memory] Working Memory Wiped (Entropy State).");
       }
     }
   }, [params.memoryResetTrigger]);
@@ -227,8 +243,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
                 });
             }
         }
-
-        const activeCount = Math.min(count, targets.length);
         
         // 2. Spatial Indexing (Morton Codes / Z-Order Curve)
         const getMortonCode = (x: number, y: number, z: number) => {
@@ -256,7 +270,17 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             return xx | (yy << 1) | (zz << 2);
         };
 
-        const pIndices = Array.from({length: count}, (_, i) => ({
+        // Filter particles based on active region
+        const availableIndices = [];
+        for (let i = 0; i < count; i++) {
+            if (params.targetRegion === -1 || data.current.regionID[i] === params.targetRegion) {
+                availableIndices.push(i);
+            }
+        }
+        
+        const activeCount = Math.min(availableIndices.length, targets.length);
+
+        const pIndices = availableIndices.map(i => ({
             index: i,
             code: getMortonCode(currentPositions[i*3], currentPositions[i*3+1], currentPositions[i*3+2])
         }));
@@ -339,7 +363,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       }
       ghostRef.current.instanceMatrix.needsUpdate = true;
     }
-  }, [params.inputText, params.particleCount]);
+  }, [params.inputText, params.particleCount, params.targetRegion]);
 
   const maxConnections = params.particleCount * 8;
   const lineGeometry = useMemo(() => {
@@ -353,10 +377,21 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
 
   useFrame((state) => {
     if (!meshRef.current || !linesRef.current) return;
+    
+    // PLAY/PAUSE LOGIC
+    if (params.paused) {
+        // Even when paused, ensure visuals match current state
+        meshRef.current.instanceMatrix.needsUpdate = true;
+        return;
+    }
 
     const { equilibriumDistance, stiffness, couplingDecay, phaseSyncRate, spatialLearningRate, dataGravity, plasticity, damping } = params;
     const count = params.particleCount;
-    const { x, v, phase, activation, target, hasTarget, memoryMatrix } = data.current;
+    // Updated Destructuring to include regionID (Sprint 0)
+    const { x, v, phase, activation, target, hasTarget, memoryMatrix, regionID } = data.current;
+
+    // Safety Check
+    if (x.length === 0 || regionID.length === 0) return;
     
     let activeTargetCount = 0;
     for(let k = 0; k < count; k++) {
@@ -385,6 +420,16 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     const meanActivation = count > 0 ? totalActivation / count : 0;
     const meanRadius = count > 0 ? Math.sqrt(totalRadiusSq / count) : 8.0;
     const meanVelocitySq = count > 0 ? totalVelocitySq / count : 0;
+    
+    // Logging Throttler
+    systemState.current.logTimer += 1;
+    if (systemState.current.logTimer > 120 && params.memoryAction.type === 'idle') { // Every ~2 seconds
+        // Only log during recall to debug wobble
+        if (!hasActiveTargets && meanVelocitySq > 0.01) {
+             console.debug(`[Physics] Recall Stability - Mean Kinetic Energy: ${meanVelocitySq.toFixed(5)}`);
+        }
+        systemState.current.logTimer = 0;
+    }
 
     // --- 2. Adaptive Parameters (Physics Engine) ---
     
@@ -428,24 +473,28 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     let adaptiveGravity = dataGravity;
 
     if (hasActiveTargets) {
-        adaptiveStiffness = stiffness * 0.005; 
+        adaptiveStiffness = stiffness * 0.005; // Lower stiffness so they don't fight the target text
         const baseGravity = Math.max(dataGravity, 0.1);
         adaptiveGravity = baseGravity * (isLearning ? 6.0 : 3.0);
+        // TIGHTENING TEXT: Increase gravity force specifically when targets are present to make text sharper
+        adaptiveGravity *= 2.0; 
     } else {
         adaptiveStiffness = isLearning ? stiffness * 0.2 : stiffness;
         adaptiveGravity = isLearning ? Math.max(dataGravity, 0.6) : dataGravity;
     }
 
-    // Adaptive Damping
-    let effectiveDamping = 0.90; 
+    // Adaptive Damping (WOBBLE FIX)
+    let effectiveDamping = params.damping; // Default ~0.8
 
     if (hasActiveTargets) {
-        effectiveDamping = isLearning ? 0.6 : 0.8;
+        // Input Mode: High friction to freeze them on the letters
+        effectiveDamping = isLearning ? 0.5 : 0.8; 
     } else {
-        const minRetention = 0.55; 
-        const maxRetention = 0.98;
-        const speedFactor = Math.exp(-meanVelocitySq * 1.5);
-        effectiveDamping = minRetention + (maxRetention - minRetention) * speedFactor;
+        // RECALL MODE:
+        // PREVIOUSLY: minRetention = 0.92 (Slippery/Ice) -> Caused Wobble
+        // FIX: Lower retention = Higher friction/damping = Honey
+        const wobbleSuppression = 0.65; 
+        effectiveDamping = wobbleSuppression;
     }
 
     // Dynamic Visualization Threshold
@@ -472,9 +521,17 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       const ix = x[i * 3];
       const iy = x[i * 3 + 1];
       const iz = x[i * 3 + 2];
+      
+      const ri = regionID[i]; // Sprint 0: Get Region
 
       for (let j = 0; j < count; j++) {
         if (i === j) continue;
+
+        // Sprint 0: Inhibition & Gating Logic
+        const rj = regionID[j];
+        
+        // 1. Inhibition: Block direct Input-Input coupling (0 <-> 1)
+        if ((ri === 0 && rj === 1) || (ri === 1 && rj === 0)) continue;
 
         const jx = x[j * 3];
         const jy = x[j * 3 + 1];
@@ -485,39 +542,29 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
         const dz = jz - iz;
         const distSq = dx * dx + dy * dy + dz * dz;
 
-        // --- PAPER IMPLEMENTATION: Eq 4.4 Probabilistic Coupling ---
-        // p_ij(t) ~ exp(-d^2/sigma^2) * cos(phi_i - phi_j)
-        // We use this probability to gate BOTH the force and the visual line.
-        // This ensures that "messy" connections (close but out of phase) are suppressed.
-
         const dist = Math.sqrt(distSq);
-        if (dist < 0.001 || dist > couplingDecay * 1.5) continue; // Optimization culling
+        if (dist < 0.001 || dist > couplingDecay * 1.5) continue; 
 
         const phaseDiff = phase[j] - phase[i];
         
-        // 1. Calculate Probabilistic Weight (Eq 4.4)
-        // Normalized spatial decay
         const spatialWeight = Math.exp(-distSq / (couplingDecay * couplingDecay));
-        
-        // Phase alignment reward: (1 + cos) / 2 maps [-1, 1] to [0, 1]
-        // This prevents negative probabilities while maintaining the "cosine reward" logic of the paper.
         const phaseWeight = (1.0 + Math.cos(phaseDiff)) * 0.5;
         
         const couplingProb = spatialWeight * phaseWeight;
 
-        // 2. Memory & Learning Logic
         const memIndex = i * count + j;
         let r0 = memoryMatrix[memIndex];
         const isLearned = r0 !== -1;
 
         if (isLearning && couplingProb > 0.05) {
-            // A. Structural Plasticity: Update equilibrium distance
             if (r0 === -1) r0 = dist; 
-            r0 = r0 + (dist - r0) * plasticity;
+            // Clamp r0 to stop it from drifting during vibration
+            // Only update if we are very stable or first learn
+            if (meanVelocitySq < 0.05 || r0 === dist) {
+                 r0 = r0 + (dist - r0) * plasticity;
+            }
             memoryMatrix[memIndex] = r0;
 
-            // B. Phase Annealing: Sync phases of coupled particles to "burn in" the edge
-            // This is critical for clean recall later.
             phaseDelta += Math.sin(phaseDiff) * plasticity * 2.0;
         }
 
@@ -527,8 +574,16 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
         let localStiffness = adaptiveStiffness;
         if (dist < r0) localStiffness = Math.max(stiffness, 2.0); 
 
-        // Modulate force by the probabilistic coupling. 
-        // If they are out of phase, they shouldn't pull each other strongly.
+        // Sprint 0: Sensory Rigidity - Harden intra-region bonds for inputs
+        if (ri === rj && (ri === 0 || ri === 1)) {
+            localStiffness *= 5.0; 
+        }
+        
+        // Recall Stability: If learned connection, boost stiffness to hold shape
+        if (!hasActiveTargets && isLearned) {
+            localStiffness *= 1.5;
+        }
+
         const effectiveForce = localStiffness * (dist - r0) * couplingProb;
         
         stress += Math.abs(effectiveForce);
@@ -541,12 +596,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
         fy += ny * effectiveForce;
         fz += nz * effectiveForce;
 
-        // 4. Phase Synchronization (Kuramoto)
         if (couplingProb > 0.1) phaseDelta += couplingProb * Math.sin(phaseDiff);
 
-        // 5. Visualization (Line Drawing)
-        // We prioritize showing LEARNED bonds (memory) or very strong transient bonds.
-        // This cleans up the "messy edges" by hiding weak probabilistic connections.
+        // Visualization
         const showLine = isLearned || (couplingProb > connectionThreshold);
         
         if (j > i && showLine && lineIndex < maxConnections) {
@@ -563,13 +615,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
           let alpha = 0.0;
 
           if (isLearned) {
-             // Learned bonds are Gold/Yellow
              r=1.0; g=0.84; b=0.0; 
-             // Opacity based on how close they are to the learned equilibrium
              const err = Math.abs(dist - r0);
              alpha = Math.max(0.3, 1.0 - err); 
           } else {
-             // Transient bonds: Dynamic Gradient
              const baseR = 0.1; const baseG = 0.2; const baseB = 0.6;
              const hotR = 0.8; const hotG = 0.9; const hotB = 1.0;
              
@@ -577,7 +626,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
              g = baseG + (hotG - baseG) * excitation;
              b = baseB + (hotB - baseB) * excitation;
              
-             // Opacity scales with coupling probability
              alpha = Math.sqrt(Math.max(0, couplingProb - connectionThreshold) / (1.0 - connectionThreshold));
           }
 
@@ -617,7 +665,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             const distFactor = 1.0 + Math.pow(distToTarget, 0.6); 
             forceMag *= distFactor;
         } else {
-             forceMag *= (distToTarget * 2.0); 
+             // TIGHTENING TEXT: Boost close-range gravity significantly
+             forceMag *= (distToTarget * 8.0); // Increased from 6.0
         }
         
         fx += dirX * forceMag;
@@ -664,11 +713,24 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       TEMP_OBJ.updateMatrix();
       meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
 
-      const phaseColor = Math.sin(phase[i]) * 0.1;
-      const r = 0.1 + energyLevel * 0.8;
-      const g = 0.3 + energyLevel * 0.5 + phaseColor;
-      const b = 0.8 + phaseColor;
+      // Sprint 0: Visual Coloring by Region
+      const region = regionID[i];
+      let baseR = 0, baseG = 0, baseB = 0;
       
+      if (region === 0) { // Cyan (Input A)
+          baseR = 0.0; baseG = 1.0; baseB = 1.0;
+      } else if (region === 1) { // Pink (Input B)
+          baseR = 1.0; baseG = 0.4; baseB = 0.8; 
+      } else { // Gold (Associative)
+          baseR = 1.0; baseG = 0.84; baseB = 0.0;
+      }
+      
+      const phaseMod = Math.sin(phase[i]) * 0.1;
+      // Blend base color with activation intensity
+      const r = Math.min(1, baseR + energyLevel * 0.4 + phaseMod);
+      const g = Math.min(1, baseG + energyLevel * 0.4 + phaseMod);
+      const b = Math.min(1, baseB + energyLevel * 0.4 + phaseMod);
+
       TEMP_COLOR.setRGB(r, g, b);
       meshRef.current.setColorAt(i, TEMP_COLOR);
     }
@@ -818,9 +880,19 @@ interface UIOverlayProps {
 const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => {
   const [localText, setLocalText] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [activeTab, setActiveTab] = useState<'auto' | 'manual'>('auto');
+  
+  // Auto-Run State
+  const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'inject' | 'stabilize' | 'learning' | 'saving' | 'forgetting' | 'recalling'>('idle');
+  const [autoStatus, setAutoStatus] = useState("");
 
-  const handleChange = (key: keyof SimulationParams, value: number | string | object) => {
+  const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
     setParams(prev => ({ ...prev, [key]: value }));
+  };
+
+  const togglePause = () => {
+    handleChange('paused', !params.paused);
   };
 
   const reset = () => {
@@ -866,121 +938,314 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
     }));
   };
 
+  // --- Auto-Run Orchestration ---
+  useEffect(() => {
+    if (autoRunPhase === 'idle') return;
+
+    let timer: ReturnType<typeof setTimeout>;
+
+    if (autoRunPhase === 'reset') {
+        setAutoStatus("Phase 1: System Reset & Calibration");
+        setParams(DEFAULT_PARAMS);
+        setLocalText("");
+        timer = setTimeout(() => setAutoRunPhase('inject'), 1500);
+    } 
+    else if (autoRunPhase === 'inject') {
+        const word = "Q-MIND";
+        setAutoStatus(`Phase 2: Injecting Data Signal "${word}"`);
+        setLocalText(word);
+        setParams(prev => ({ ...prev, inputText: word, dataGravity: 0.4 }));
+        console.log("[AutoPilot] Injecting Data...");
+        timer = setTimeout(() => setAutoRunPhase('stabilize'), 3000); // Increased
+    }
+    else if (autoRunPhase === 'stabilize') {
+        setAutoStatus("Phase 3: Stabilizing Particle Cloud...");
+        // Just waiting for physics to settle visually
+        console.log("[AutoPilot] Stabilizing...");
+        timer = setTimeout(() => setAutoRunPhase('learning'), 3500); // Increased
+    }
+    else if (autoRunPhase === 'learning') {
+        setAutoStatus("Phase 4: Enabling Plasticity (Hebbian Learning)");
+        togglePlasticity(true);
+        console.log("[AutoPilot] Learning Active.");
+        // Allow time for yellow lines to form
+        timer = setTimeout(() => setAutoRunPhase('saving'), 5000); // Increased
+    }
+    else if (autoRunPhase === 'saving') {
+        setAutoStatus("Phase 5: Persisting Quantum State to Memory Slot 1");
+        handleMemoryAction('save', 1);
+        timer = setTimeout(() => setAutoRunPhase('forgetting'), 1500);
+    }
+    else if (autoRunPhase === 'forgetting') {
+        setAutoStatus("Phase 6: Inducing Entropy (Forgetting Input)");
+        togglePlasticity(false);
+        setLocalText("");
+        setParams(prev => ({ ...prev, inputText: "", memoryResetTrigger: prev.memoryResetTrigger + 1 }));
+        timer = setTimeout(() => setAutoRunPhase('recalling'), 3000);
+    }
+    else if (autoRunPhase === 'recalling') {
+        setAutoStatus("Phase 7: Holographic Associative Recall");
+        handleMemoryAction('load', 1);
+        timer = setTimeout(() => {
+            setAutoStatus("Experiment Complete.");
+            setAutoRunPhase('idle');
+        }, 5000);
+    }
+
+    return () => clearTimeout(timer);
+  }, [autoRunPhase]);
+
+  const startAutoRun = () => {
+      setAutoRunPhase('reset');
+  };
+
   return (
     <div className="absolute top-0 right-0 p-4 w-full md:w-80 h-full pointer-events-none flex flex-col items-end">
       <div className="bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl p-5 text-white w-full shadow-2xl pointer-events-auto overflow-y-auto max-h-[90vh] custom-scrollbar">
-        <h1 className="text-xl font-bold mb-1 text-cyan-400">Holographic Memory</h1>
-        <p className="text-[10px] text-gray-400 mb-4 italic">Associative Storage in Particle Clouds</p>
         
-        <div className="mb-4 bg-cyan-900/20 p-3 rounded-lg border border-cyan-500/30">
-          <h2 className="text-[10px] font-bold uppercase tracking-widest text-cyan-300 mb-2">1. Encode Data</h2>
-          <form onSubmit={handleTextSubmit} className="flex gap-2 mb-2">
-            <input 
-              type="text" 
-              value={localText}
-              onChange={(e) => setLocalText(e.target.value)}
-              placeholder="e.g. QUBIT"
-              className="w-full bg-black/50 border border-cyan-500/50 rounded px-2 py-1 text-sm focus:outline-none focus:border-cyan-400 font-mono"
-              maxLength={16} // Increased from 8 to 16
-            />
-            <button type="submit" className="bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1 rounded text-xs font-bold transition-colors">
-              INPUT
+        <div className="flex justify-between items-start mb-4">
+            <div>
+                <h1 className="text-xl font-bold text-cyan-400">Holographic Memory</h1>
+                <p className="text-[10px] text-gray-400 italic">Associative Storage in Particle Clouds</p>
+            </div>
+            <button 
+                onClick={() => setShowHelp(true)}
+                className="text-cyan-400 hover:text-cyan-200 transition-colors"
+                title="Open Simulation Guide"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+                </svg>
             </button>
-          </form>
-          
-          <div className="mb-2 pt-2 border-t border-cyan-500/20">
-            <div className="flex justify-between text-[10px] mb-1">
-              <span className="font-mono text-cyan-200">Data Gravity</span>
-              <span className="text-cyan-300">{params.dataGravity.toFixed(2)}</span>
-            </div>
-            <input
-              type="range"
-              min="0.0"
-              max="1.0"
-              step="0.01"
-              value={params.dataGravity}
-              onChange={(e) => handleChange('dataGravity', parseFloat(e.target.value))}
-              className="w-full h-1 bg-cyan-900/50 rounded-lg appearance-none cursor-pointer accent-cyan-400"
-            />
-          </div>
-
-          {params.inputText && (
-               <button onClick={clearInput} className="w-full bg-red-500/20 hover:bg-red-500/40 text-red-200 text-[10px] py-1 rounded transition-colors">
-                 Remove Input (Enter Recall Mode)
-               </button>
-          )}
         </div>
 
-        <div className="mb-4 bg-yellow-900/20 p-3 rounded-lg border border-yellow-500/30">
-            <div className="flex justify-between items-center mb-2">
-                <div className="flex items-center gap-2">
-                    <span className="text-yellow-300 text-[10px] font-bold uppercase tracking-wider">2. Imprint (Learn)</span>
-                    <button 
-                        onClick={() => setShowInfo(!showInfo)}
-                        className="text-yellow-500 hover:text-yellow-300 transition-colors"
-                    >
-                        <span className="text-xs border border-yellow-500 rounded-full w-4 h-4 flex items-center justify-center">?</span>
+        {/* Tab Switcher */}
+        <div className="flex bg-gray-900 rounded p-1 mb-4 border border-gray-700">
+            <button 
+                onClick={() => setActiveTab('auto')}
+                className={`flex-1 py-1 text-xs font-bold rounded transition-colors ${activeTab === 'auto' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+                Auto-Pilot
+            </button>
+            <button 
+                onClick={() => setActiveTab('manual')}
+                className={`flex-1 py-1 text-xs font-bold rounded transition-colors ${activeTab === 'manual' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+                Manual Control
+            </button>
+        </div>
+        
+        {/* Play / Pause Toggle */}
+        <div className="bg-white/5 p-2 rounded mb-4 flex justify-center border border-white/10">
+             <button
+                onClick={togglePause}
+                className={`flex items-center gap-2 px-6 py-2 rounded-full border transition-all ${params.paused ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/50' : 'bg-green-500/20 text-green-300 border-green-500/50'} `}
+             >
+                {params.paused ? (
+                   <>
+                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                       <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                     </svg>
+                     <span className="text-xs font-bold uppercase">Resume Physics</span>
+                   </>
+                ) : (
+                   <>
+                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                     </svg>
+                     <span className="text-xs font-bold uppercase">Pause Simulation</span>
+                   </>
+                )}
+             </button>
+        </div>
+
+        {/* AUTO-PILOT VIEW */}
+        {activeTab === 'auto' && (
+            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="bg-cyan-900/10 border border-cyan-500/30 rounded-lg p-4 mb-4 text-center">
+                    <div className="w-16 h-16 bg-cyan-500/10 rounded-full flex items-center justify-center mx-auto mb-3 border border-cyan-500/30">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8 text-cyan-400">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                        </svg>
+                    </div>
+                    <h3 className="text-cyan-300 font-bold mb-1">Run Simulation</h3>
+                    <p className="text-[10px] text-gray-400 mb-4">Automated training & recall cycle</p>
+                    
+                    {autoRunPhase === 'idle' ? (
+                        <button 
+                            onClick={startAutoRun}
+                            className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded shadow-lg shadow-cyan-500/20 transition-all active:scale-95"
+                        >
+                            Start Experiment
+                        </button>
+                    ) : (
+                        <div className="text-left bg-black/40 p-3 rounded border border-cyan-500/20">
+                             <div className="flex items-center gap-2 mb-2">
+                                <span className="relative flex h-2 w-2">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                                </span>
+                                <span className="text-[10px] text-cyan-300 uppercase tracking-wider font-bold">Running</span>
+                             </div>
+                             <p className="text-xs text-white font-mono leading-tight">{autoStatus}</p>
+                        </div>
+                    )}
+                </div>
+                
+                <div className="text-[10px] text-gray-500 space-y-1 pl-2 border-l border-gray-700">
+                    <p>Sequence:</p>
+                    <p>1. Inject Data Pattern</p>
+                    <p>2. Enable Hebbian Learning</p>
+                    <p>3. Persist Synaptic Matrix</p>
+                    <p>4. Induce Chaos (Forget)</p>
+                    <p>5. Associative Recall</p>
+                </div>
+            </div>
+        )}
+        
+        {/* MANUAL VIEW */}
+        {activeTab === 'manual' && (
+            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="mb-4 bg-cyan-900/20 p-3 rounded-lg border border-cyan-500/30">
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-cyan-300 mb-2">1. Encode Data</h2>
+                  <form onSubmit={handleTextSubmit} className="flex gap-2 mb-2">
+                    <input 
+                      type="text" 
+                      value={localText}
+                      onChange={(e) => setLocalText(e.target.value)}
+                      placeholder="e.g. QUBIT"
+                      className="w-full bg-black/50 border border-cyan-500/50 rounded px-2 py-1 text-sm focus:outline-none focus:border-cyan-400 font-mono"
+                      maxLength={16} 
+                    />
+                    <button type="submit" className="bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1 rounded text-xs font-bold transition-colors">
+                      INPUT
                     </button>
-                </div>
-                <div className={`w-2 h-2 rounded-full ${params.plasticity > 0 ? 'bg-yellow-400 animate-pulse' : 'bg-gray-600'}`}></div>
-            </div>
-            
-            {showInfo && (
-                <div className="mb-3 p-2 bg-black/40 rounded border border-yellow-500/20 text-[10px] text-gray-300 leading-relaxed shadow-inner">
-                    <p className="mb-1"><strong>Plasticity:</strong> Hardens connections between particles based on their current positions.</p>
-                </div>
-            )}
+                  </form>
 
-            <div className="flex items-center gap-2 mb-2">
-               <button 
-                  onClick={() => togglePlasticity(true)} 
-                  className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity > 0 ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-300'}`}
-               >
-                  ON
-               </button>
-               <button 
-                  onClick={() => togglePlasticity(false)} 
-                  className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity === 0 ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500'}`}
-               >
-                  OFF
-               </button>
-            </div>
-            <p className="text-[9px] text-yellow-500/60 text-center italic">
-                {params.plasticity > 0 ? "Optimizing parameters for learning..." : "Standard physics active"}
-            </p>
-        </div>
+                  {/* New Region Selector for Sprint 0 Verification */}
+                  <div className="flex gap-1 mb-2">
+                    <button 
+                        onClick={() => handleChange('targetRegion', 0)}
+                        className={`flex-1 text-[9px] py-1 rounded border border-cyan-500/30 ${params.targetRegion === 0 ? 'bg-cyan-500 text-black font-bold' : 'bg-black/30 text-cyan-500'}`}
+                    >
+                        Input A
+                    </button>
+                    <button 
+                        onClick={() => handleChange('targetRegion', 1)}
+                        className={`flex-1 text-[9px] py-1 rounded border border-pink-500/30 ${params.targetRegion === 1 ? 'bg-pink-500 text-black font-bold' : 'bg-black/30 text-pink-500'}`}
+                    >
+                        Input B
+                    </button>
+                     <button 
+                        onClick={() => handleChange('targetRegion', -1)}
+                        className={`flex-1 text-[9px] py-1 rounded border border-gray-500/30 ${params.targetRegion === -1 ? 'bg-gray-200 text-black font-bold' : 'bg-black/30 text-gray-400'}`}
+                    >
+                        All
+                    </button>
+                  </div>
+                  
+                  <div className="mb-2 pt-2 border-t border-cyan-500/20">
+                    <div className="flex justify-between text-[10px] mb-1">
+                      <span className="font-mono text-cyan-200">Data Gravity</span>
+                      <span className="text-cyan-300">{params.dataGravity.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      value={params.dataGravity}
+                      onChange={(e) => handleChange('dataGravity', parseFloat(e.target.value))}
+                      className="w-full h-1 bg-cyan-900/50 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                    />
+                  </div>
 
-        <div className="mb-4 bg-purple-900/20 p-3 rounded-lg border border-purple-500/30">
-             <h2 className="text-[10px] font-bold uppercase tracking-widest text-purple-300 mb-3">3. Associative Memory Bank</h2>
-             
-             <div className="space-y-2">
-                {[1, 2, 3, 4].map(slot => (
-                    <div key={slot} className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-purple-200 font-mono">Slot {slot}</span>
-                        <div className="flex gap-1">
+                  {params.inputText && (
+                       <button onClick={clearInput} className="w-full bg-red-500/20 hover:bg-red-500/40 text-red-200 text-[10px] py-1 rounded transition-colors">
+                         Remove Input (Enter Recall Mode)
+                       </button>
+                  )}
+                </div>
+
+                <div className="mb-4 bg-yellow-900/20 p-3 rounded-lg border border-yellow-500/30">
+                    <div className="flex justify-between items-center mb-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-yellow-300 text-[10px] font-bold uppercase tracking-wider">2. Imprint (Learn)</span>
                             <button 
-                                onClick={() => handleMemoryAction('save', slot)}
-                                className="bg-purple-700/50 hover:bg-purple-600 text-[10px] px-2 py-1 rounded text-purple-100 border border-purple-500/50"
+                                onClick={() => setShowInfo(!showInfo)}
+                                className="text-yellow-500 hover:text-yellow-300 transition-colors"
                             >
-                                Save
-                            </button>
-                             <button 
-                                onClick={() => handleMemoryAction('load', slot)}
-                                className="bg-purple-500 hover:bg-purple-400 text-[10px] px-3 py-1 rounded text-white font-bold"
-                            >
-                                Recall
+                                <span className="text-xs border border-yellow-500 rounded-full w-4 h-4 flex items-center justify-center">?</span>
                             </button>
                         </div>
+                        <div className={`w-2 h-2 rounded-full ${params.plasticity > 0 ? 'bg-yellow-400 animate-pulse' : 'bg-gray-600'}`}></div>
                     </div>
-                ))}
-             </div>
-             
-             <button 
-               onClick={forgetCurrentMemory} 
-               className="w-full mt-3 py-1 bg-white/5 hover:bg-white/10 text-gray-400 border border-white/10 rounded transition-colors text-[10px] uppercase tracking-wider"
-            >
-              Clear Current State
-            </button>
+                    
+                    {showInfo && (
+                        <div className="mb-3 p-2 bg-black/40 rounded border border-yellow-500/20 text-[10px] text-gray-300 leading-relaxed shadow-inner">
+                            <p className="mb-1"><strong>Plasticity:</strong> Hardens connections between particles based on their current positions.</p>
+                        </div>
+                    )}
+
+                    <div className="flex items-center gap-2 mb-2">
+                       <button 
+                          onClick={() => togglePlasticity(true)} 
+                          className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity > 0 ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-300'}`}
+                       >
+                          ON
+                       </button>
+                       <button 
+                          onClick={() => togglePlasticity(false)} 
+                          className={`flex-1 py-1 rounded text-xs font-bold transition-colors ${params.plasticity === 0 ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500'}`}
+                       >
+                          OFF
+                       </button>
+                    </div>
+                    <p className="text-[9px] text-yellow-500/60 text-center italic">
+                        {params.plasticity > 0 ? "Optimizing parameters for learning..." : "Standard physics active"}
+                    </p>
+                </div>
+
+                <div className="mb-4 bg-purple-900/20 p-3 rounded-lg border border-purple-500/30">
+                     <h2 className="text-[10px] font-bold uppercase tracking-widest text-purple-300 mb-3">3. Associative Memory Bank</h2>
+                     
+                     <div className="space-y-2">
+                        {[1, 2, 3, 4].map(slot => (
+                            <div key={slot} className="flex items-center justify-between gap-2">
+                                <span className="text-xs text-purple-200 font-mono">Slot {slot}</span>
+                                <div className="flex gap-1">
+                                    <button 
+                                        onClick={() => handleMemoryAction('save', slot)}
+                                        className="bg-purple-700/50 hover:bg-purple-600 text-[10px] px-2 py-1 rounded text-purple-100 border border-purple-500/50"
+                                    >
+                                        Save
+                                    </button>
+                                     <button 
+                                        onClick={() => handleMemoryAction('load', slot)}
+                                        className="bg-purple-500 hover:bg-purple-400 text-[10px] px-3 py-1 rounded text-white font-bold"
+                                    >
+                                        Recall
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                     </div>
+                     
+                     <button 
+                       onClick={forgetCurrentMemory} 
+                       className="w-full mt-3 py-1 bg-white/5 hover:bg-white/10 text-gray-400 border border-white/10 rounded transition-colors text-[10px] uppercase tracking-wider"
+                    >
+                      Clear Current State
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* Legend for Regions */}
+        <div className="mb-4 p-2 bg-white/5 rounded border border-white/10 flex justify-between text-[9px] text-gray-400">
+             <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400"></span> Input A</div>
+             <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-400"></span> Input B</div>
+             <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400"></span> Assoc</div>
         </div>
 
         {/* Heatmap Visualization Added Here */}
@@ -997,6 +1262,69 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
           </button>
         </div>
       </div>
+      
+      {/* Help Modal */}
+      {showHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 pointer-events-auto">
+            <div className="bg-gray-900 border border-cyan-500/50 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl relative">
+                <button 
+                    onClick={() => setShowHelp(false)}
+                    className="absolute top-4 right-4 text-gray-400 hover:text-white"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+                
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                    <h2 className="text-2xl font-bold text-cyan-400 mb-4">Simulation Guide</h2>
+                    
+                    <div className="space-y-6 text-gray-300 text-sm">
+                        <section>
+                            <h3 className="text-lg font-bold text-white mb-2">The Concept</h3>
+                            <p className="leading-relaxed">This simulation demonstrates <strong>Predictive Coding</strong> in a 3D particle system. Particles minimize "Free Energy" (difference between their state and a target state) to self-organize. By introducing plasticity, the system "learns" spatial configurations, allowing it to recall shapes even after the input is removed.</p>
+                        </section>
+
+                        <section>
+                            <h3 className="text-lg font-bold text-white mb-2">Auto-Pilot Mode</h3>
+                            <p className="leading-relaxed">Select the <strong>Auto-Pilot</strong> tab to run a pre-configured experiment. This automatically injects data, trains the network, wipes the memory, and then demonstrates associative recall.</p>
+                        </section>
+
+                        <section>
+                            <h3 className="text-lg font-bold text-white mb-2">Manual Control</h3>
+                            <ul className="list-disc pl-5 space-y-3">
+                                <li>
+                                    <strong className="text-cyan-300">1. Encode Data:</strong> Type a word (e.g., "BRAIN") and click INPUT. The particles will rearrange to form the shape.
+                                </li>
+                                <li>
+                                    <strong className="text-pink-300">Target Regions:</strong> Use the buttons (Input A / Input B) to direct the input to specific parts of the cloud. This demonstrates how different sensory inputs can be processed separately.
+                                </li>
+                                <li>
+                                    <strong className="text-yellow-300">2. Imprint (Learn):</strong> Toggle <strong>ON</strong>. The system calculates synaptic weights based on particle proximity. Active connections turn yellow. Wait for the structure to stabilize.
+                                </li>
+                                <li>
+                                    <strong className="text-purple-300">3. Associative Memory:</strong> 
+                                    <ul className="list-[circle] pl-5 mt-1 text-xs text-gray-400 space-y-1">
+                                        <li><strong>Save:</strong> Stores the current weight matrix (synapses) into a slot.</li>
+                                        <li><strong>Recall:</strong> Restores weights and quantum states (phase/spin) but <em>scrambles positions</em>. The system must then "hallucinate" the shape back into existence using the learned weights.</li>
+                                    </ul>
+                                </li>
+                            </ul>
+                        </section>
+                    </div>
+                </div>
+                
+                <div className="p-4 border-t border-gray-800 flex justify-end">
+                     <button 
+                        onClick={() => setShowHelp(false)}
+                        className="px-4 py-2 bg-cyan-900/50 hover:bg-cyan-800 text-cyan-200 rounded border border-cyan-500/30 transition-colors"
+                    >
+                        Close Guide
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1030,6 +1358,11 @@ function App() {
     target: new Float32Array(0),
     hasTarget: new Uint8Array(0),
     memoryMatrix: new Float32Array(0),
+    regionID: new Uint8Array(0),
+    forwardMatrix: new Float32Array(0),
+    feedbackMatrix: new Float32Array(0),
+    delayedActivation: new Float32Array(0),
+    lastActiveTime: new Float32Array(0),
   });
 
   return (
