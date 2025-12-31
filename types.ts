@@ -3,22 +3,22 @@ export type MemoryActionType = 'idle' | 'save' | 'load' | 'clear';
 export interface MemoryAction {
   type: MemoryActionType;
   slot: number;
-  triggerId: number; // Increment to trigger effect
+  triggerId: number; 
 }
 
 export interface SimulationParams {
   particleCount: number;
-  equilibriumDistance: number; // Global base r0 (if no memory)
-  stiffness: number; // k in paper
-  couplingDecay: number; // sigma in paper
-  phaseSyncRate: number; // kappa
-  spatialLearningRate: number; // eta_r
-  dataGravity: number; // Input strength
-  plasticity: number; // How fast connections learn the current shape (0 to 1)
-  damping: number; // Friction (0.0 to 1.0)
+  equilibriumDistance: number; 
+  stiffness: number; 
+  couplingDecay: number; 
+  phaseSyncRate: number; 
+  spatialLearningRate: number; 
+  dataGravity: number; 
+  plasticity: number; 
+  damping: number; 
   inputText: string; 
-  memoryResetTrigger: number; // Signal to wipe current memory
-  memoryAction: MemoryAction; // Command for Memory Bank
+  memoryResetTrigger: number; 
+  memoryAction: MemoryAction; 
 }
 
 export interface ParticleData {
@@ -29,21 +29,19 @@ export interface ParticleData {
   activation: Float32Array; 
   target: Float32Array; 
   hasTarget: Uint8Array;
-  // We need a memory matrix. Flattened N*N array storing the "learned" distance between i and j.
-  // -1 implies no connection memory.
   memoryMatrix: Float32Array; 
 }
 
 export const DEFAULT_PARAMS: SimulationParams = {
   particleCount: 800, 
-  equilibriumDistance: 1.0, // Reduced for tighter packing
+  equilibriumDistance: 1.0, 
   stiffness: 0.8,
   couplingDecay: 4.0,
   phaseSyncRate: 0.05,
   spatialLearningRate: 0.05,
   dataGravity: 0.2, 
-  plasticity: 0.0, // Default off
-  damping: 0.80, // High drag to prevent hairball
+  plasticity: 0.0, 
+  damping: 0.80, 
   inputText: "",
   memoryResetTrigger: 0,
   memoryAction: { type: 'idle', slot: 0, triggerId: 0 },
