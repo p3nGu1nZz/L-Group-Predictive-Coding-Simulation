@@ -142,7 +142,7 @@ export const CONSTANTS = {
 **Goal:** Detector clusters and hysteresis-based logic.
 
 **Implementation Guide:**
-1.  **Detector Selection:** Select particles in Region 2 (indices `N*0.6` to `N*0.7`) as the "Detector Cluster".
+1.  **Detector Selection:** Calculate the spatial centroid of Region 2. Select the nearest 10% of Region 2 particles to this centroid. This ensures deterministic placement at the topological center of the associative field.
 2.  **Logic:**
     ```typescript
     // Complex Amplitude
@@ -164,7 +164,7 @@ export const CONSTANTS = {
 1.  **Spatial Index:** 
     *   Use Uniform Grid with `cell_size = CONSTANTS.gridCellSize`.
     *   Rebuild neighbors every `CONSTANTS.spatialRefreshRate` frames.
-2.  **WebWorker:** Offload physics. Post `Matrix4` array back to main thread.
+    *   **WebWorker:** Offload physics. Post `Matrix4` array back to main thread.
 
 **Acceptance Criteria:**
 *   FPS > 30 at N = 2000.
