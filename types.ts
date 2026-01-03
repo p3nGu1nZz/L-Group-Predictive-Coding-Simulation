@@ -1,4 +1,5 @@
 
+
 export type MemoryActionType = 'idle' | 'save' | 'load' | 'clear';
 
 export interface MemoryAction {
@@ -24,13 +25,18 @@ export interface SimulationParams {
   paused: boolean;
   showRegions: boolean; 
   chaosMode: boolean; // New flag for entropy injection
+  
+  // Paper Specifics
+  usePaperPhysics: boolean;
+  spinCouplingStrength: number; // Gamma in Eq 18
+  phaseCouplingStrength: number; // Alpha in Eq 14
 }
 
 export interface ParticleData {
   x: Float32Array; 
   v: Float32Array; 
   phase: Float32Array; 
-  spin: Float32Array; 
+  spin: Int8Array; // Changed to Int8 for -1, 1
   activation: Float32Array; 
   target: Float32Array; 
   hasTarget: Uint8Array;
@@ -80,5 +86,9 @@ export const DEFAULT_PARAMS: SimulationParams = {
   memoryAction: { type: 'idle', slot: 0, triggerId: 0 },
   paused: false,
   showRegions: false,
-  chaosMode: false, // Default to False so we see structure immediately
+  chaosMode: false,
+  
+  usePaperPhysics: false,
+  spinCouplingStrength: 0.5,
+  phaseCouplingStrength: 1.0,
 };

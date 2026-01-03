@@ -1,3 +1,5 @@
+
+
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
@@ -23,9 +25,18 @@ const CYAN = new THREE.Color("#06b6d4");
 const RED = new THREE.Color("#ef4444");
 const GREEN = new THREE.Color("#22c55e");
 
+// Paper Colors for Spin
+const SPIN_UP_COLOR = new THREE.Color("#ff0055"); // Spin +1/2
+const SPIN_DOWN_COLOR = new THREE.Color("#0055ff"); // Spin -1/2
+
 // Optimization: Singleton Canvas
 let sharedTextCanvas: HTMLCanvasElement | null = null;
 let sharedTextCtx: CanvasRenderingContext2D | null = null;
+
+// Paper Math: Dynamic Tanh (Eq 15)
+const DyT = (x: number, alpha2: number, alpha3: number) => {
+    return alpha2 * Math.tanh(alpha3 * x);
+};
 
 // Adaptive Text Sampling
 const textToPoints = (text: string, targetCount: number): { positions: Float32Array, count: number } => {
@@ -91,7 +102,9 @@ interface SystemStats {
   meanSpeed: number;
   energy: number;
   fps: number;
-  temperature: number; 
+  temperature: number;
+  isStable: boolean;
+  trainingProgress: number; 
 }
 
 interface ParticleSystemProps {
@@ -123,6 +136,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
   const memoryBank = useRef<Map<number, MemorySnapshot>>(new Map());
   const data = dataRef;
+  const flashRef = useRef<Float32Array | null>(null);
 
   // Initialization
   useEffect(() => {
@@ -133,12 +147,17 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     spatialRefs.current.neighborList = new Int32Array(count * 128); 
     spatialRefs.current.neighborCounts = new Int32Array(count);
 
+    // Initialize Flash Buffer
+    if (!flashRef.current || flashRef.current.length !== count) {
+        flashRef.current = new Float32Array(count);
+    }
+
     if (data.current.x.length !== count * 3) {
         data.current = {
             x: new Float32Array(count * 3),
             v: new Float32Array(count * 3),
             phase: new Float32Array(count),
-            spin: new Float32Array(count),
+            spin: new Int8Array(count),
             activation: new Float32Array(count),
             target: new Float32Array(count * 3),
             hasTarget: new Uint8Array(count),
@@ -167,6 +186,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             data.current.phase[i] = Math.random() * Math.PI * 2;
             
+            // Paper: Assign Intrinsic Spin (+1/2 or -1/2)
+            data.current.spin[i] = Math.random() > 0.5 ? 1 : -1;
+
             if (i < Math.floor(count * 0.25)) data.current.regionID[i] = 0;      
             else if (i < Math.floor(count * 0.5)) data.current.regionID[i] = 1;  
             else data.current.regionID[i] = 2;                                   
@@ -294,15 +316,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     const timeNow = state.clock.elapsedTime;
     
     // Teacher Algorithm: Thermodynamic Modulation
-    // T = 0.0 (Cold/Stable), T = 1.0 (Hot/Chaotic)
     let systemTemperature = 0.0;
     if (teacherFeedback === 1) systemTemperature = 0.0; // Crystallize
     else if (teacherFeedback === -1) systemTemperature = 1.0; // Agitate
     else systemTemperature = 0.05; // Ambient
 
-    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate } = params;
+    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength } = params;
     const count = params.particleCount;
-    const { x, v, phase, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime } = data.current;
+    const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime } = data.current;
     
     if (x.length === 0) return;
 
@@ -310,7 +331,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     for(let k = 0; k < count; k++) if(hasTarget[k] === 1) activeTargetCount++;
     const hasActiveTargets = activeTargetCount > 0;
     
-    // Teacher modulates plasticity: High Temp = High Plasticity (Search for new weights)
     const effectivePlasticity = teacherFeedback === -1 ? 0.3 : (teacherFeedback === 1 ? 0.0 : plasticity);
     const isEncoding = effectivePlasticity > 0;
     const isRecalling = hasActiveTargets && params.inputText === ""; 
@@ -370,12 +390,13 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     let totalError = 0;
     let totalSpeed = 0;
     let totalKineticEnergy = 0;
+    let totalSynapticWeight = 0;
 
-    // Temporal Parameters
     const activationDecay = 0.95;
-    const delayAlpha = 0.15; // Smoothing factor for axon delay
-    const stdpWindow = 0.5; // Seconds
-    const stdpRate = 0.1;
+    const delayAlpha = 0.15; 
+    
+    // CONTINUOUS STDP PARAMETERS
+    const continuousStdpRate = 0.05; 
 
     for (let i = 0; i < count; i++) {
       let fx = 0, fy = 0, fz = 0;
@@ -388,28 +409,23 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const isTarget = hasTarget[i] === 1;
 
       // Update Activation States
-      // Decay
       if (!isTarget) activation[i] *= activationDecay;
       else activation[i] = 1.0;
       
-      // Update Delayed Activation (Axon Buffer)
       delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
 
-      // Update Spike Timing
-      // If activation crosses threshold, mark timestamp
       if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
           lastActiveTime[i] = timeNow;
       }
 
-      // Base Chaos/Target Forces
+      // Base forces
       if (effectiveChaos) {
           fx += (Math.random() - 0.5) * 1.5;
           fy += (Math.random() - 0.5) * 1.5;
           fz += (Math.random() - 0.5) * 1.5;
           fx += -iy * 0.05; fy += ix * 0.05;
       } else if (systemTemperature > 0.5) {
-          // PUNISHMENT/SEARCH MODE: High Noise
-          const noise = systemTemperature * 0.25; // Increased noise for better "shaking"
+          const noise = systemTemperature * 0.25; 
           fx += (Math.random() - 0.5) * noise;
           fy += (Math.random() - 0.5) * noise;
           fz += (Math.random() - 0.5) * noise;
@@ -432,8 +448,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           fz += dz * k_spring_base;
       }
 
-      const interactionStrength = hasTarget[i] ? 0.1 : 1.0;
-      if (interactionStrength > 0.01) {
+      const baseInteractionStrength = hasTarget[i] ? 0.1 : 1.0;
+
+      // Prediction Damping Factor: Increases if receiving strong prediction to "Lock in"
+      let predictionLock = 0.0;
+
+      if (baseInteractionStrength > 0.01) {
           for (let n = 0; n < nCount; n++) {
             const j = spatialRefs.current.neighborList[nOffset + n];
             const rj = regionID[j];
@@ -448,91 +468,123 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             const r0 = equilibriumDistance; 
             let force = 0;
             
-            // 1. Symmetric Spring Force (Structure)
-            if (dist < r0) force = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
-            else if (!hasTarget[i]) force = stiffness * stiffnessMult * (dist - r0) * 0.1;
-            
-            // 2. Directed Drive Force (Temporal Dynamics)
-            // Force on I from J = forwardMatrix[J->I] * delayedActivation[J]
-            // This pulls I towards J if J is active and the connection is strong
-            const weightJI = forwardMatrix[j * count + i]; // J to I
-            if (weightJI > 0.01) {
-                // If J is active, it pulls I towards itself (Attraction)
-                // Magnitude depends on J's delayed signal
-                const drive = weightJI * delayedActivation[j] * 2.5; // Gain
-                force += drive; 
+            // --- PAPER IMPLEMENTATION (Eq 14, 18, 30) ---
+            let paperCoupling = 1.0;
+            if (usePaperPhysics) {
+                // 1. Vibrational Phase Sync (Eq 30: cos(phi_i - phi_j))
+                // Normalized to [0,1] for attraction weight
+                const phaseDiff = phase[i] - phase[j];
+                const phaseTerm = (Math.cos(phaseDiff) + 1.0) / 2.0; 
                 
-                // Visualization of active signal transmission
-                if (delayedActivation[j] > 0.5 && lineIndex < maxConnections) {
-                     const li = lineIndex * 6;
-                     linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
-                     linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
-                     
-                     // Signal Color (White/Hot)
-                     lineColors[li] = 2.0; lineColors[li+1] = 2.0; lineColors[li+2] = 2.0; 
-                     lineColors[li+3] = 0; lineColors[li+4] = 0; lineColors[li+5] = 0; // Fade to source
-                     lineIndex++;
+                // 2. Intrinsic Spin Modulation (Eq 18: M(si, sj) = 1 + gamma * si * sj)
+                // spin is -1 or 1. If aligned -> 1.5, if opposite -> 0.5 (with strength=0.5)
+                const spinTerm = 1.0 + spinCouplingStrength * spin[i] * spin[j];
+
+                // 3. Dynamic Tanh Activation (Eq 16) - Modulates synchronization effect
+                // Using a simplified Softplus-like effect as per paper suggestion for continuity
+                const syncStrength = DyT(phaseTerm, 1.0, 2.0);
+
+                paperCoupling = (phaseTerm * phaseCouplingStrength) * spinTerm * syncStrength;
+                
+                // Paper forces are attractive based on this coupling
+                // If particles are out of phase or opposite spin, they barely interact
+            }
+            
+            // 1. Symmetric Spring Force (Structure)
+            let springF = 0;
+            if (dist < r0) springF = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
+            else if (!hasTarget[i]) springF = stiffness * stiffnessMult * (dist - r0) * 0.1;
+
+            if (usePaperPhysics) {
+                // Apply Vibrational Coupling Probability to the force
+                force += springF * paperCoupling;
+            } else {
+                force += springF;
+            }
+
+            // 2. Directed Drive Force (Standard PCN) & Visualization
+            if (!usePaperPhysics) {
+                const weightJI = forwardMatrix[j * count + i]; 
+                
+                if (weightJI > 0.01) {
+                    const signal = weightJI * delayedActivation[j];
+                    
+                    // A. Transfer Activation (Visual Ghosting)
+                    // High signal makes the receiving particle glow
+                    activation[i] += signal * 0.3; 
+                    
+                    // B. Physical Locking
+                    // Instead of a strong pull (which causes explosion), we add damping
+                    // and a very slight bias.
+                    predictionLock += signal; 
+                    force += signal * 0.01; 
                 }
             }
             
-            // 3. STDP Learning Rule
-            if (isEncoding) {
-                // If I just fired, and J fired recently before me...
-                // Strengthen J -> I
-                if (activation[i] > 0.8 && activation[j] > 0.8) {
-                     const dt = lastActiveTime[i] - lastActiveTime[j]; // Post - Pre
-                     if (dt > 0 && dt < stdpWindow) {
-                         // LTP
-                         forwardMatrix[j * count + i] += stdpRate;
-                         // Clamp
-                         if (forwardMatrix[j * count + i] > 1.0) forwardMatrix[j * count + i] = 1.0;
-                     }
+            // 3. CONTINUOUS STDP (Hebbian)
+            if (isEncoding && !usePaperPhysics) {
+                // If J fired in the past (delayed) and I is firing now
+                // We strengthen the connection J -> I
+                // Using a continuous product instead of a hard threshold for realism
+                const hebbianProduct = activation[i] * delayedActivation[j];
+                
+                if (hebbianProduct > 0.1) {
+                    const deltaW = hebbianProduct * continuousStdpRate;
+                    forwardMatrix[j * count + i] += deltaW;
+                    if (forwardMatrix[j * count + i] > 1.0) forwardMatrix[j * count + i] = 1.0;
+                    totalSynapticWeight += deltaW;
                 }
             }
 
-            force *= interactionStrength;
+            force *= baseInteractionStrength;
             const invDist = 1.0 / dist;
             fx += dx * invDist * force; fy += dy * invDist * force; fz += dz * invDist * force;
             
+            // Phase Synchronization (Kuramoto)
             const phaseDiff = phase[j] - phase[i];
-            phaseDelta += Math.sin(phaseDiff) * 0.1;
+            
+            // Paper: Phase alignment is also modulated by Spin!
+            let syncRate = phaseSyncRate;
+            if (usePaperPhysics) {
+                 syncRate *= (1.0 + spinCouplingStrength * spin[i] * spin[j]);
+            }
+            phaseDelta += Math.sin(phaseDiff) * 0.1 * syncRate;
 
-            if (j > i && dist < r0 * 2.0 && lineIndex < maxConnections && weightJI <= 0.01) {
+            // Visual Lines
+            const showLine = usePaperPhysics 
+                ? (paperCoupling > 0.8 && dist < r0 * 2.5) // Show strong vibrational coupling
+                : (j > i && dist < r0 * 2.0);
+
+            if (showLine && lineIndex < maxConnections) {
                 const li = lineIndex * 6;
                 linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
                 linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
                 
-                lineColors[li] = 0; lineColors[li+1] = 2.0; lineColors[li+2] = 5.0; 
-                lineColors[li+3] = 0; lineColors[li+4] = 2.0; lineColors[li+5] = 5.0;
+                if (usePaperPhysics) {
+                    // Color based on Phase Sync
+                    // Gold if synced, Blue if not
+                    const hue = Math.abs(Math.cos(phaseDiff));
+                    lineColors[li] = hue * 2; lineColors[li+1] = hue; lineColors[li+2] = 0.5;
+                    lineColors[li+3] = hue * 2; lineColors[li+4] = hue; lineColors[li+5] = 0.5;
+                } else {
+                    // REDUCED GLOW (0.5, 1.2 vs 2.0, 5.0)
+                    lineColors[li] = 0; lineColors[li+1] = 0.5; lineColors[li+2] = 1.2; 
+                    lineColors[li+3] = 0; lineColors[li+4] = 0.5; lineColors[li+5] = 1.2;
+                }
                 lineIndex++;
             }
           }
       }
 
       let particleDamping = 0.85; 
+      if (usePaperPhysics) particleDamping = 0.90; // Less damping to allow vibration
+      if (!started) particleDamping = 0.95; 
+      else if (effectiveChaos) particleDamping = 0.98;
       
-      if (!started) {
-          particleDamping = 0.95; 
-      } else if (effectiveChaos) {
-          particleDamping = 0.98;
-      } else if (teacherFeedback === 1) {
-          // REWARD: Freeze/Crystallize
-          particleDamping = 0.65; 
-      } else if (teacherFeedback === -1) {
-          // PUNISH: Agitate
-          particleDamping = 0.90;
-      } else if (isEncoding) {
-          if (isTarget) {
-              const dx = target[idx3] - x[idx3];
-              const dy = target[idx3+1] - x[idx3+1];
-              const dz = target[idx3+2] - x[idx3+2];
-              const distSq = dx*dx + dy*dy + dz*dz;
-              particleDamping = distSq < 0.1 ? 0.05 : 0.50;
-          } else {
-              particleDamping = 0.20; 
-          }
-      } else if (isRecalling) {
-          particleDamping = 0.15;
+      // Apply Prediction Lock (Stabilization from Inference)
+      // If a particle is being strongly predicted, it resists movement (simulating certainty)
+      if (predictionLock > 0.1) {
+          particleDamping *= (1.0 - Math.min(0.5, predictionLock * 0.5));
       }
 
       v[idx3] = v[idx3] * particleDamping + fx;
@@ -542,19 +594,21 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const speedSq = v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2;
       const speed = Math.sqrt(speedSq);
       totalSpeed += speed;
-      totalKineticEnergy += 0.5 * speedSq; // E_k = 0.5 * m * v^2 (m=1)
+      totalKineticEnergy += 0.5 * speedSq;
 
-      if (speedSq < 0.0001 && !effectiveChaos && started) {
-           const jitter = isRecalling ? 0.0005 : 0.002;
-           v[idx3] += (Math.random() - 0.5) * jitter;
-           v[idx3+1] += (Math.random() - 0.5) * jitter;
-           v[idx3+2] += (Math.random() - 0.5) * jitter;
+      // UPDATE FLASH INTENSITY
+      if (flashRef.current) {
+          flashRef.current[i] *= 0.92; // Slower decay for longer duration
+          if (isRecalling && speed < 0.005) {
+               flashRef.current[i] = 3.0; // Intense flash value (trigger bloom)
+          }
       }
 
       x[idx3] += v[idx3]; x[idx3+1] += v[idx3+1]; x[idx3+2] += v[idx3+2];
       
       const rSq = x[idx3]**2 + x[idx3+1]**2 + x[idx3+2]**2;
       if (rSq > 2500) { x[idx3]*=0.99; x[idx3+1]*=0.99; x[idx3+2]*=0.99; }
+      
       phase[i] += phaseSyncRate * phaseDelta + 0.05;
 
       // Update Matrices
@@ -567,31 +621,49 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
       const entropy = Math.min(1.0, speed * 0.5); 
       let r=0, g=0, b=0;
-      if (rid === 0) { r=0.1; g=1.0; b=1.0; } // Cyan
-      else if (rid === 1) { r=1.0; g=0.1; b=1.0; } // Magenta
-      else { r=1.0; g=0.8; b=0.0; } // Gold
+      
+      if (usePaperPhysics) {
+          // In Paper Mode, Color = Spin
+          if (spin[i] > 0) {
+              r = SPIN_UP_COLOR.r; g = SPIN_UP_COLOR.g; b = SPIN_UP_COLOR.b; // Red/Pink
+          } else {
+              r = SPIN_DOWN_COLOR.r; g = SPIN_DOWN_COLOR.g; b = SPIN_DOWN_COLOR.b; // Blue
+          }
+          // Mix with Phase for visual pulse
+          const pulse = (Math.sin(phase[i]) + 1) * 0.5;
+          r += pulse * 0.3; g += pulse * 0.3; b += pulse * 0.3;
+      } else {
+          // Region Colors
+          if (rid === 0) { r=0.1; g=1.0; b=1.0; } // Cyan
+          else if (rid === 1) { r=1.0; g=0.1; b=1.0; } // Magenta
+          else { r=1.0; g=0.8; b=0.0; } // Gold
+      }
 
       const coreMix = entropy * 2.0; 
-      TEMP_COLOR.setRGB(r * coreMix, g * coreMix, b * coreMix); 
+      TEMP_COLOR.setRGB(r * (1+coreMix), g * (1+coreMix), b * (1+coreMix)); 
       
-      // Teacher Visual Feedback: Red (Punish), Green (Reward)
-      if (teacherFeedback === 1) TEMP_COLOR.lerp(GREEN, 0.4);
-      else if (teacherFeedback === -1) TEMP_COLOR.lerp(RED, 0.4);
-
-      // Flash on Activation (Spike)
-      if (activation[i] > 0.5) {
+      // APPLY FLASH VISUALS
+      if (flashRef.current && flashRef.current[i] > 0.05) {
+           const f = flashRef.current[i];
+           // Blend to white based on intensity, allowing over-saturation
+           TEMP_COLOR.lerp(WHITE, Math.min(1.0, f));
+           // Additive bloom boost
+           if (f > 1.0) {
+                TEMP_COLOR.r += f * 0.5;
+                TEMP_COLOR.g += f * 0.5;
+                TEMP_COLOR.b += f * 0.5;
+           }
+      }
+      else if (activation[i] > 0.5) {
           TEMP_COLOR.lerp(WHITE, activation[i]);
       }
       meshRef.current.setColorAt(i, TEMP_COLOR);
 
+      // Outline / Glow
       const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
-      const glowIntensity = 2.5 + entropy * 4.0; 
+      const glowIntensity = usePaperPhysics ? 3.5 : 2.5 + entropy * 4.0; 
       TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
       
-      if (activation[i] > 0.5) {
-          TEMP_EMISSIVE.lerp(WHITE, activation[i]);
-      }
-
       if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
     }
 
@@ -600,7 +672,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         statsRef.current.meanSpeed = totalSpeed / count;
         statsRef.current.energy = totalKineticEnergy; 
         statsRef.current.fps = 1 / delta;
-        statsRef.current.temperature = systemTemperature; // Expose T
+        statsRef.current.temperature = systemTemperature; 
+        statsRef.current.isStable = totalKineticEnergy < 15.0 && totalError < (activeTargetCount * 0.05);
+        statsRef.current.trainingProgress = totalSynapticWeight;
     }
     
     meshRef.current.instanceMatrix.needsUpdate = true;
@@ -618,7 +692,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   return (
     <>
       <InstancedMesh ref={ghostRef} args={[undefined, undefined, params.particleCount]}>
-        {/* OPTIMIZATION: Reduce geometry complexity (8x8) for performance */}
         <SphereGeometry args={[1, 8, 8]} />
         <MeshBasicMaterial color="#ffffff" transparent opacity={0.05} wireframe />
       </InstancedMesh>
@@ -637,9 +710,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       </InstancedMesh>
 
       <InstancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
-         {/* OPTIMIZATION: Reduce geometry complexity */}
         <SphereGeometry args={[0.22, 10, 10]} /> 
-        {/* OPTIMIZATION: Switch from Standard (PBR) to Phong for better performance while keeping lighting */}
         <MeshPhongMaterial 
             color="#050505" 
             specular="#999999"
@@ -657,7 +728,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 };
 
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
-    // Only render if showRegions is true
     if (!params.showRegions) return null;
 
     return (
@@ -679,7 +749,6 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 };
 
 // --- Matrix HUD ---
-// Visualizes the connectivity/adjacency matrix in real-time
 const MatrixHUD: React.FC<{ 
     spatialRefs: React.MutableRefObject<{ neighborList: Int32Array; neighborCounts: Int32Array; }>; 
     particleCount: number;
@@ -695,28 +764,21 @@ const MatrixHUD: React.FC<{
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, size, size);
 
-            // Region Guidelines (Background)
-            // Cyan: 0-25% | Magenta: 25-50% | Gold: 50-100%
             const p0 = 0;
             const p1 = size * 0.25;
             const p2 = size * 0.5;
             const p3 = size;
             
-            ctx.fillStyle = 'rgba(6, 182, 212, 0.1)'; // Cyan low alpha
+            ctx.fillStyle = 'rgba(6, 182, 212, 0.1)'; 
             ctx.fillRect(p0, p0, p1, p1);
 
-            ctx.fillStyle = 'rgba(236, 72, 153, 0.1)'; // Pink low alpha
+            ctx.fillStyle = 'rgba(236, 72, 153, 0.1)'; 
             ctx.fillRect(p1, p1, p2-p1, p2-p1);
 
-            ctx.fillStyle = 'rgba(234, 179, 8, 0.1)'; // Gold low alpha
+            ctx.fillStyle = 'rgba(234, 179, 8, 0.1)'; 
             ctx.fillRect(p2, p2, p3-p2, p3-p2);
 
-            // Draw connectivity
             const scale = size / particleCount;
-            ctx.fillStyle = '#06b6d4'; // Cyan default
-
-            // FIX: Sample across the entire population, not just the first 300
-            // Stride to maintain performance while showing full structure
             const step = Math.max(1, Math.floor(particleCount / 300)); 
 
             for(let i=0; i<particleCount; i+=step) {
@@ -724,11 +786,9 @@ const MatrixHUD: React.FC<{
                 const offset = i * 48; // maxNeighbors
                 const x = Math.floor(i * scale);
                 
-                // Draw self (diagonal)
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(x, x, 1, 1);
 
-                // Set color based on Source Region
                 if (i < particleCount * 0.25) ctx.fillStyle = '#06b6d4';
                 else if (i < particleCount * 0.5) ctx.fillStyle = '#ec4899';
                 else ctx.fillStyle = '#eab308';
@@ -738,7 +798,7 @@ const MatrixHUD: React.FC<{
                     if (j < particleCount) {
                         const y = Math.floor(j * scale);
                         ctx.fillRect(x, y, 1, 1);
-                        ctx.fillRect(y, x, 1, 1); // Symmetric
+                        ctx.fillRect(y, x, 1, 1); 
                     }
                 }
             }
@@ -796,7 +856,6 @@ const InferenceControlPanel: React.FC<{
                 </button>
              </div>
              
-             {/* Temperature Gauge */}
              <div className="h-32 w-4 bg-gray-900 border border-gray-800 relative ml-10">
                  <div 
                     className={`absolute bottom-0 w-full transition-all duration-300 ${feedback === -1 ? 'bg-red-500 h-full' : (feedback === 1 ? 'bg-green-500 h-[5%]' : 'bg-cyan-500 h-[20%]')}`}
@@ -807,13 +866,86 @@ const InferenceControlPanel: React.FC<{
     )
 }
 
+// --- Temporal Training Controller (State Machine) ---
+interface TemporalControllerProps {
+    enabled: boolean;
+    state: 'idle' | 'training' | 'ready';
+    setState: (s: 'idle' | 'training' | 'ready') => void;
+    setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
+    statsRef: React.MutableRefObject<SystemStats>;
+    addLog: (s: string) => void;
+}
+
+const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled, state, setState, setParams, statsRef, addLog }) => {
+    const trainingStage = useRef(0);
+    const stepTimer = useRef(0);
+    const waitingForStable = useRef(false);
+
+    useEffect(() => {
+        if (!enabled || state !== 'training') {
+            trainingStage.current = 0;
+            return;
+        }
+
+        const interval = setInterval(() => {
+            if (!statsRef.current) return;
+            const { isStable } = statsRef.current;
+            stepTimer.current += 100;
+
+            const cycle = Math.floor(trainingStage.current / 2);
+            const phase = trainingStage.current % 2; // 0 = TICK, 1 = TOCK
+
+            if (cycle >= 3) {
+                 // FINISHED
+                 setParams(p => ({ ...p, inputText: "", plasticity: 0 }));
+                 setState('ready');
+                 addLog("TRAINING COMPLETE. READY FOR PREDICTION.");
+                 return;
+            }
+
+            if (waitingForStable.current) {
+                // Wait for physics to settle before advancing
+                if (isStable && stepTimer.current > 1500) {
+                     waitingForStable.current = false;
+                     trainingStage.current++;
+                     stepTimer.current = 0;
+                     // Trigger next phase immediately
+                } else {
+                    return; // Keep waiting
+                }
+            }
+
+            if (!waitingForStable.current) {
+                // START NEW PHASE
+                if (phase === 0) {
+                     // TICK PHASE
+                     addLog(`CYCLE ${cycle + 1}: IMPRINTING 'TICK' (A)...`);
+                     setParams(p => ({ ...p, inputText: "TICK", targetRegion: 0, plasticity: 0.2 }));
+                     waitingForStable.current = true;
+                } else {
+                     // TOCK PHASE
+                     addLog(`CYCLE ${cycle + 1}: ASSOCIATING 'TOCK' (B)...`);
+                     // Keep TICK visible (persistence) so correlation can happen, add TOCK
+                     setParams(p => ({ ...p, inputText: "TOCK", targetRegion: 1, plasticity: 0.2 }));
+                     waitingForStable.current = true;
+                }
+            }
+
+        }, 100);
+
+        return () => clearInterval(interval);
+    }, [enabled, state]);
+
+    return null;
+};
+
 // --- UI Overlay ---
 
 interface UIOverlayProps {
   params: SimulationParams;
   setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
   dataRef: React.MutableRefObject<ParticleData>;
-  simulationMode: 'standard' | 'temporal' | 'inference';
+  simulationMode: 'standard' | 'temporal' | 'inference' | 'paper';
   statsRef: React.MutableRefObject<SystemStats>;
   onTestComplete: (results: TestResult[]) => void;
 }
@@ -822,8 +954,6 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
   const [showHelp, setShowHelp] = useState(false);
   const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'entropy' | 'observation' | 'encoding' | 'amnesia' | 'recall'>('idle');
   const [testLogs, setTestLogs] = useState<string[]>([]);
-
-  // Temporal Demo State
   const [temporalState, setTemporalState] = useState<'idle' | 'training' | 'ready'>('idle');
 
   const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
@@ -840,87 +970,65 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
       setTestLogs(prev => [...prev.slice(-4), `> ${msg}`]);
   };
 
+  // --- PAPER DEMO SETUP ---
+  useEffect(() => {
+      if (simulationMode === 'paper') {
+          // Initialize for L-Group Demo
+          setParams(prev => ({ 
+              ...prev, 
+              usePaperPhysics: true, 
+              showRegions: false, 
+              inputText: "", 
+              particleCount: 1500, // Higher count for wave effects
+              couplingDecay: 6.0,
+              spinCouplingStrength: 0.5,
+              phaseCouplingStrength: 1.0,
+              chaosMode: false
+          }));
+          addLog("L-GROUP FRAMEWORK INITIALIZED.");
+          addLog("SPIN STATES: RED (+1/2), BLUE (-1/2)");
+      }
+  }, [simulationMode]);
+
   // --- EXPERIMENT A: ACTIVE INFERENCE (THERMODYNAMICS) ---
   useEffect(() => {
       if (simulationMode === 'inference') {
-          // Initialize with "ORDER" but add hidden noise
           setParams(prev => ({ ...prev, showRegions: true, inputText: "ORDER", targetRegion: 0 }));
           addLog("SYSTEM INITIALIZED. PATTERN: 'ORDER'");
-          addLog("USE AGITATE (HEAT) TO BREAK LOCAL MINIMA.");
       }
   }, [simulationMode]);
 
   // --- EXPERIMENT B: TEMPORAL PREDICTION ---
   const runTemporalTraining = () => {
       setTemporalState('training');
-      addLog("TRAINING: IMPRINTING A -> B...");
-      
-      let cursor = 0;
-      // Flash Sequence 3 times
-      for(let i=0; i<3; i++) {
-          setTimeout(() => setParams(p => ({ ...p, inputText: "TICK", targetRegion: 0, plasticity: 0.2 })), cursor);
-          cursor += 1000;
-          setTimeout(() => setParams(p => ({ ...p, inputText: "TOCK", targetRegion: 1, plasticity: 0.2 })), cursor);
-          cursor += 1000;
-      }
-
-      setTimeout(() => {
-          setParams(p => ({ ...p, inputText: "", plasticity: 0 }));
-          setTemporalState('ready');
-          addLog("TRAINING COMPLETE. READY FOR PREDICTION.");
-      }, cursor);
+      // Logic handled by TemporalTrainingController
   };
 
   const triggerTemporalCue = () => {
       addLog("CUE: TRIGGERING 'TICK'...");
       setParams(p => ({ ...p, inputText: "TICK", targetRegion: 0 }));
-      
-      // Cut input quickly to show ghost
       setTimeout(() => {
           setParams(p => ({ ...p, inputText: "" }));
           addLog("OBSERVE: 'TOCK' GHOST IN REGION B");
-      }, 600);
+      }, 2000);
   };
 
-  // Standard Mode Step logic (omitted changes for brevity, kept same)
-  // ...
-
   const togglePlasticity = (active: boolean) => {
-    if (active) setParams(prev => ({ 
-        ...prev, 
-        plasticity: 0.1, 
-        dataGravity: Math.max(prev.dataGravity, 0.5) 
-    }));
+    if (active) setParams(prev => ({ ...prev, plasticity: 0.1, dataGravity: Math.max(prev.dataGravity, 0.5) }));
     else setParams(prev => ({ ...prev, plasticity: 0 }));
   };
 
-  // Step-by-Step Experiment Controller (Standard Mode Only)
+  // Step-by-Step Experiment Controller
   useEffect(() => {
     if (simulationMode !== 'standard') return; 
     if (autoRunPhase === 'idle') return;
 
-    if (autoRunPhase === 'reset') {
-        setParams(DEFAULT_PARAMS);
-    } 
-    else if (autoRunPhase === 'entropy') {
-        setParams(prev => ({ ...prev, chaosMode: true, inputText: "" }));
-    }
-    else if (autoRunPhase === 'observation') {
-        const word = "QUANTUM";
-        setParams(prev => ({ ...prev, chaosMode: false, inputText: word, dataGravity: 0.4 }));
-    }
-    else if (autoRunPhase === 'encoding') {
-        togglePlasticity(true); 
-        setTimeout(() => handleMemoryAction('save', 1), 1000); 
-    }
-    else if (autoRunPhase === 'amnesia') {
-        togglePlasticity(false); 
-        setParams(prev => ({ ...prev, inputText: "", chaosMode: true }));
-    }
-    else if (autoRunPhase === 'recall') {
-        setParams(prev => ({ ...prev, chaosMode: false }));
-        handleMemoryAction('load', 1);
-    }
+    if (autoRunPhase === 'reset') setParams(DEFAULT_PARAMS);
+    else if (autoRunPhase === 'entropy') setParams(prev => ({ ...prev, chaosMode: true, inputText: "" }));
+    else if (autoRunPhase === 'observation') setParams(prev => ({ ...prev, chaosMode: false, inputText: "QUANTUM", dataGravity: 0.4 }));
+    else if (autoRunPhase === 'encoding') { togglePlasticity(true); setTimeout(() => handleMemoryAction('save', 1), 1000); }
+    else if (autoRunPhase === 'amnesia') { togglePlasticity(false); setParams(prev => ({ ...prev, inputText: "", chaosMode: true })); }
+    else if (autoRunPhase === 'recall') { setParams(prev => ({ ...prev, chaosMode: false })); handleMemoryAction('load', 1); }
   }, [autoRunPhase, simulationMode]);
 
   const nextStep = () => {
@@ -960,7 +1068,6 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
 
   return (
     <div className="absolute top-0 right-0 p-4 w-full md:w-80 h-full pointer-events-none flex flex-col items-end font-['Rajdhani'] pb-8">
-      {/* SCANLINES OVERLAY */}
       <div className="scanlines"></div>
 
       <div className={`${panelClass} pointer-events-auto flex flex-col gap-3 w-full clip-path-polygon`}>
@@ -980,7 +1087,42 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
         {/* CONTROLLER PANEL */}
         <div className="space-y-3 pt-2">
             <div className="bg-cyan-950/30 border border-cyan-500/20 p-3 text-center relative">
-                {simulationMode === 'inference' ? (
+                {simulationMode === 'paper' ? (
+                    <div className="text-left">
+                        <div className="flex items-center gap-2 mb-2 border-b border-purple-800 pb-2">
+                            <div className="w-2 h-2 bg-purple-500 animate-pulse"></div>
+                            <span className="text-xs text-purple-300 font-bold tracking-widest">EXP C: L-GROUP DYNAMICS</span>
+                        </div>
+                        <div className="text-[10px] text-purple-100 font-mono mb-2">
+                             Visualizing vibrational coupling modulated by Intrinsic Spin and Phase (Eq. 30).
+                        </div>
+                        
+                        <div className="flex flex-col gap-2">
+                             <div className="flex items-center justify-between">
+                                 <span className="text-[9px] text-purple-300">SPIN COUPLING (γ)</span>
+                                 <input 
+                                    type="range" min="0" max="1" step="0.1" 
+                                    value={params.spinCouplingStrength} 
+                                    onChange={(e) => handleChange('spinCouplingStrength', parseFloat(e.target.value))}
+                                    className="w-20"
+                                 />
+                             </div>
+                             <div className="flex items-center justify-between">
+                                 <span className="text-[9px] text-purple-300">PHASE COUPLING (α)</span>
+                                 <input 
+                                    type="range" min="0" max="2" step="0.1" 
+                                    value={params.phaseCouplingStrength} 
+                                    onChange={(e) => handleChange('phaseCouplingStrength', parseFloat(e.target.value))}
+                                    className="w-20"
+                                 />
+                             </div>
+                             
+                             <button onClick={() => handleChange('inputText', params.inputText ? "" : "L-GROUP")} className="mt-2 py-1 px-2 border border-purple-500/50 text-[9px] hover:bg-purple-900/50">
+                                 TOGGLE STRUCTURE INPUT
+                             </button>
+                        </div>
+                    </div>
+                ) : simulationMode === 'inference' ? (
                      <div className="text-left">
                         <div className="flex items-center gap-2 mb-2 border-b border-yellow-800 pb-2">
                             <div className="w-2 h-2 bg-yellow-500 animate-pulse"></div>
@@ -988,10 +1130,6 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                         </div>
                         <div className="text-[10px] text-yellow-200 font-mono opacity-80 mb-2 leading-relaxed">
                             <span className="text-white font-bold">GOAL:</span> Use Thermodynamic controls (Left) to stabilize the pattern "ORDER".
-                            <br/><br/>
-                            1. AGITATE to break false shapes.
-                            <br/>
-                            2. FREEZE when structure emerges.
                         </div>
                     </div>
                 ) : simulationMode === 'temporal' ? (
@@ -1001,13 +1139,22 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                             <span className="text-xs text-green-300 font-bold tracking-widest">EXP B: CAUSAL PREDICTION</span>
                         </div>
                         
+                        <TemporalTrainingController 
+                            enabled={simulationMode === 'temporal'} 
+                            state={temporalState} 
+                            setState={setTemporalState}
+                            setParams={setParams}
+                            statsRef={statsRef}
+                            addLog={addLog}
+                        />
+
                         <div className="flex flex-col gap-2 mt-2">
                             <button 
                                 onClick={runTemporalTraining} 
                                 disabled={temporalState === 'training'}
                                 className={`w-full py-2 bg-green-900/40 border border-green-500/50 text-green-300 font-bold text-xs tracking-widest hover:bg-green-800/60 ${temporalState === 'training' ? 'opacity-50 cursor-wait' : ''}`}
                             >
-                                {temporalState === 'training' ? 'TRAINING...' : '1. IMPRINT: TICK -> TOCK'}
+                                {temporalState === 'training' ? 'TRAINING (DYNAMIC)...' : '1. IMPRINT: TICK -> TOCK'}
                             </button>
 
                             <button 
@@ -1017,38 +1164,35 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                             >
                                 2. TRIGGER: "TICK" ONLY
                             </button>
-                        </div>
-
-                        {/* Real-time Feedback Console */}
-                        <div className="text-[10px] text-green-200 font-mono bg-black/80 p-2 border border-green-500/30 min-h-[60px] flex flex-col justify-end mt-2">
-                            {testLogs.map((log, i) => (
-                                <div key={i} className="opacity-80">{log}</div>
-                            ))}
+                            
+                            {temporalState === 'training' && (
+                                <div className="text-[9px] text-green-400 font-mono text-center animate-pulse">
+                                    AWAITING CONVERGENCE...
+                                </div>
+                            )}
                         </div>
                     </div>
                 ) : (
                     /* STANDARD MODE CONTROLS */
-                    autoRunPhase === 'idle' ? (
-                        <button onClick={() => setAutoRunPhase('reset')} className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(6,182,212,0.6)] animate-pulse clip-corner transition-all">
-                            INITIALIZE EXPERIMENT
-                        </button>
-                    ) : (
                         <div className="text-left">
-                             <div className="flex items-center gap-2 mb-2 border-b border-cyan-800 pb-2">
-                                <div className="w-2 h-2 bg-green-400 animate-pulse"></div>
-                                <span className="text-xs text-cyan-300 font-bold tracking-widest">PHASE: {autoRunPhase.toUpperCase()}</span>
-                             </div>
-                             
-                             <p className="text-xs text-white font-mono bg-black/50 p-2 border-l-2 border-cyan-500 mb-3 min-h-[40px]">
-                                {getStandardStatusText()}
-                             </p>
-    
-                             <button onClick={nextStep} className="w-full py-2 bg-cyan-700 hover:bg-cyan-500 text-white font-bold text-xs tracking-widest border border-cyan-400/50 transition-all flex justify-between px-4 items-center group">
-                                <span>{getNextButtonText()}</span>
-                                <span className="group-hover:translate-x-1 transition-transform">>></span>
-                             </button>
+                             {autoRunPhase === 'idle' ? (
+                                <button onClick={() => setAutoRunPhase('reset')} className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(6,182,212,0.6)] animate-pulse clip-corner transition-all">
+                                    INITIALIZE EXPERIMENT
+                                </button>
+                             ) : (
+                                 <>
+                                     <div className="flex items-center gap-2 mb-2 border-b border-cyan-800 pb-2">
+                                        <div className="w-2 h-2 bg-green-400 animate-pulse"></div>
+                                        <span className="text-xs text-cyan-300 font-bold tracking-widest">PHASE: {autoRunPhase.toUpperCase()}</span>
+                                     </div>
+                                     <p className="text-xs text-white font-mono bg-black/50 p-2 border-l-2 border-cyan-500 mb-3 min-h-[40px]">{getStandardStatusText()}</p>
+                                     <button onClick={nextStep} className="w-full py-2 bg-cyan-700 hover:bg-cyan-500 text-white font-bold text-xs tracking-widest border border-cyan-400/50 transition-all flex justify-between px-4 items-center group">
+                                        <span>{getNextButtonText()}</span>
+                                        <span className="group-hover:translate-x-1 transition-transform">>></span>
+                                     </button>
+                                 </>
+                             )}
                         </div>
-                    )
                 )}
             </div>
         </div>
@@ -1062,22 +1206,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                 </button>
             </div>
         </div>
-
       </div>
-      
-      {/* Help Modal */}
-      {showHelp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 pointer-events-auto">
-            <div className="bg-black border border-cyan-500 rounded-none w-full max-w-lg p-6 relative shadow-[0_0_30px_rgba(6,182,212,0.3)]">
-                <button onClick={() => setShowHelp(false)} className="absolute top-2 right-2 text-cyan-600 hover:text-cyan-200">X</button>
-                <h2 className="text-xl font-bold text-cyan-400 mb-4 tracking-widest border-b border-cyan-800 pb-2">OPERATOR_MANUAL</h2>
-                <div className="space-y-2 text-xs text-cyan-100 font-mono">
-                    <p className="text-cyan-300">>> MODE: CYCLIC DEMO</p>
-                    <p>Automated sequence: Entropy Injection -> Pattern Formation -> Hebbian Learning -> Dissolution.</p>
-                </div>
-            </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -1116,12 +1245,6 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
                  {stats.energy.toFixed(2)}
              </span>
         </div>
-        <div className="flex items-center gap-2">
-            <span className="opacity-50">TEMP (T):</span>
-            <span className={stats.temperature > 0.8 ? "text-red-500 font-bold" : (stats.temperature < 0.1 ? "text-green-400" : "text-cyan-200")}>
-                {stats.temperature.toFixed(2)}
-            </span>
-        </div>
         <div className="flex-1"></div>
         <div className="flex items-center gap-2">
             <span className="opacity-50">FPS:</span>
@@ -1136,8 +1259,9 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
 const TitleScreen: React.FC<{ 
     onStartStandard: () => void, 
     onStartTemporal: () => void, 
-    onStartInference: () => void 
-}> = ({ onStartStandard, onStartTemporal, onStartInference }) => {
+    onStartInference: () => void,
+    onStartPaper: () => void
+}> = ({ onStartStandard, onStartTemporal, onStartInference, onStartPaper }) => {
     return (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
             <div className="max-w-4xl w-full p-12 border-l-4 border-cyan-500 bg-black/90 relative overflow-hidden">
@@ -1153,17 +1277,17 @@ const TitleScreen: React.FC<{
                 
                 <div className="mb-8 text-gray-300 font-mono text-sm leading-relaxed border-t border-b border-gray-800 py-6">
                     <strong className="text-white block mb-2">SPRINT 1: ACTIVE INFERENCE</strong>
-                    We have evolved the system from passive storage to active learning. Select a module below:
+                    Select an experimental module:
                 </div>
                 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-4 gap-4">
                     <button onClick={onStartStandard} className="py-6 bg-cyan-900/30 border border-cyan-600/50 hover:bg-cyan-600 hover:text-black hover:border-cyan-400 text-cyan-100 font-bold text-sm tracking-widest clip-corner transition-all">
                         STANDARD SIMULATION
                     </button>
                     
                     <button onClick={onStartInference} className="py-6 bg-yellow-900/30 border border-yellow-600/50 hover:bg-yellow-600 hover:text-black hover:border-yellow-400 text-yellow-100 font-bold text-sm tracking-widest clip-corner transition-all relative overflow-hidden group">
                         <div className="absolute inset-0 bg-yellow-500/10 translate-y-full group-hover:translate-y-0 transition-transform"></div>
-                        <span className="relative z-10">EXP A: ACTIVE INFERENCE</span>
+                        <span className="relative z-10">EXP A: INFERENCE</span>
                         <div className="text-[9px] font-normal opacity-60 mt-1 relative z-10">THERMODYNAMIC AGENCY</div>
                     </button>
 
@@ -1171,6 +1295,12 @@ const TitleScreen: React.FC<{
                         <div className="absolute inset-0 bg-green-500/10 translate-y-full group-hover:translate-y-0 transition-transform"></div>
                         <span className="relative z-10">EXP B: CAUSAL PREDICTION</span>
                         <div className="text-[9px] font-normal opacity-60 mt-1 relative z-10">HEBBIAN TIME (A -&gt; B)</div>
+                    </button>
+                    
+                    <button onClick={onStartPaper} className="py-6 bg-purple-900/30 border border-purple-600/50 hover:bg-purple-600 hover:text-black hover:border-purple-400 text-purple-100 font-bold text-sm tracking-widest clip-corner transition-all relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-purple-500/10 translate-y-full group-hover:translate-y-0 transition-transform"></div>
+                        <span className="relative z-10">EXP C: L-GROUP</span>
+                        <div className="text-[9px] font-normal opacity-60 mt-1 relative z-10">VIBRATIONAL COUPLING</div>
                     </button>
                 </div>
             </div>
@@ -1231,7 +1361,6 @@ const SimulationCanvas: React.FC<{
     <Canvas camera={{ position: [0, 0, 35], fov: 45 }} gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
         <color attach="background" args={['#020205']} />
         
-        {/* OPTIMIZATION: Removed fog for better performance and clarity */}
         <ambientLight intensity={0.2} />
         
         <pointLight position={[20, 20, 20]} intensity={2} color="#00ffff" distance={100} decay={2} />
@@ -1250,7 +1379,6 @@ const SimulationCanvas: React.FC<{
             <Vignette eskil={false} offset={0.1} darkness={1.1} />
         </EffectComposer>
 
-        {/* CONTROLS: makeDefault and listenToKeyEvents={window} enables arrow keys without clicking canvas first */}
         <OrbitControls 
             makeDefault 
             autoRotate={!started} 
@@ -1266,15 +1394,13 @@ const SimulationCanvas: React.FC<{
 };
 
 function App() {
-  // null = title screen, 'standard' = normal, 'temporal' = sequence, 'inference' = manual teacher
-  const [simulationMode, setSimulationMode] = useState<'standard' | 'temporal' | 'inference' | null>(null);
+  const [simulationMode, setSimulationMode] = useState<'standard' | 'temporal' | 'inference' | 'paper' | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
-  const [teacherFeedback, setTeacherFeedback] = useState<number>(0); // -1 = Punish, 0 = Neutral, 1 = Reward
+  const [teacherFeedback, setTeacherFeedback] = useState<number>(0); 
   
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
-  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0 });
+  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0 });
   
-  // Hoist spatial refs to share with HUD
   const spatialRefs = useRef({
       gridHead: new Int32Array(4096),
       gridNext: new Int32Array(0),
@@ -1287,7 +1413,7 @@ function App() {
     x: new Float32Array(0),
     v: new Float32Array(0),
     phase: new Float32Array(0),
-    spin: new Float32Array(0),
+    spin: new Int8Array(0),
     activation: new Float32Array(0),
     target: new Float32Array(0),
     hasTarget: new Uint8Array(0),
@@ -1305,7 +1431,7 @@ function App() {
 
   const handleCloseReport = () => {
       setTestResults(null);
-      setSimulationMode(null); // Return to title
+      setSimulationMode(null); 
   };
 
   return (
@@ -1324,6 +1450,7 @@ function App() {
             onStartStandard={() => setSimulationMode('standard')} 
             onStartTemporal={() => setSimulationMode('temporal')} 
             onStartInference={() => setSimulationMode('inference')}
+            onStartPaper={() => setSimulationMode('paper')}
           />
       )}
       
