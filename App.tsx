@@ -14,6 +14,11 @@ const LineBasicMaterial = 'lineBasicMaterial' as any;
 const MeshBasicMaterial = 'meshBasicMaterial' as any;
 const MeshStandardMaterial = 'meshStandardMaterial' as any; 
 
+const TEMP_OBJ = new THREE.Object3D();
+const TEMP_COLOR = new THREE.Color();
+const TEMP_EMISSIVE = new THREE.Color();
+const WHITE = new THREE.Color(1, 1, 1);
+
 // Optimization: Singleton Canvas
 let sharedTextCanvas: HTMLCanvasElement | null = null;
 let sharedTextCtx: CanvasRenderingContext2D | null = null;
@@ -39,7 +44,7 @@ const textToPoints = (text: string, targetCount: number): { positions: Float32Ar
   ctx.fillStyle = 'black';
   ctx.fillRect(0, 0, width, height);
   
-  // Font Sizing - Kept reduced for composition
+  // Font Sizing
   const fontSize = 95; 
   ctx.fillStyle = 'white';
   ctx.font = `bold ${fontSize}px Arial`;
@@ -77,18 +82,9 @@ const textToPoints = (text: string, targetCount: number): { positions: Float32Ar
   return { positions: new Float32Array(points), count: points.length / 3 };
 };
 
-interface SpatialData {
-  gridHead: Int32Array;
-  gridNext: Int32Array;
-  neighborList: Int32Array;
-  neighborCounts: Int32Array;
-  frameCounter: number;
-}
-
 interface ParticleSystemProps {
   params: SimulationParams;
   dataRef: React.MutableRefObject<ParticleData>;
-  spatialRef: React.MutableRefObject<SpatialData>;
 }
 
 interface MemorySnapshot {
@@ -103,7 +99,7 @@ interface MemorySnapshot {
   regionID: Uint8Array;
 }
 
-const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatialRef }) => {
+const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const outlineRef = useRef<THREE.InstancedMesh>(null); 
   const ghostRef = useRef<THREE.InstancedMesh>(null);
@@ -111,6 +107,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
 
   const memoryBank = useRef<Map<number, MemorySnapshot>>(new Map());
   
+  const spatialRefs = useRef({
+      gridHead: new Int32Array(4096),
+      gridNext: new Int32Array(0),
+      neighborList: new Int32Array(0),
+      neighborCounts: new Int32Array(0),
+      frameCounter: 0
+  });
+
   const systemState = useRef({ meanError: 10.0 });
   const data = dataRef;
 
@@ -119,13 +123,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
     const count = params.particleCount;
     const memorySize = count * count;
     
-    // Check if spatialRef needs initialization or resizing
-    if (spatialRef.current.gridNext.length !== count) {
-       spatialRef.current.gridNext = new Int32Array(count);
-       spatialRef.current.neighborList = new Int32Array(count * 128); 
-       spatialRef.current.neighborCounts = new Int32Array(count);
-       spatialRef.current.gridHead = new Int32Array(4096);
-    }
+    spatialRefs.current.gridNext = new Int32Array(count);
+    spatialRefs.current.neighborList = new Int32Array(count * 128); 
+    spatialRefs.current.neighborCounts = new Int32Array(count);
 
     if (data.current.x.length !== count * 3) {
         data.current = {
@@ -221,46 +221,25 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
 
   // PHYSICS LOOP
   useFrame((state) => {
-    if (!meshRef.current || !linesRef.current || !outlineRef.current || params.paused) return;
-
-    const count = params.particleCount;
-
-    // Fix: Lazily initialize instanceColor if it doesn't exist (it is null by default on InstancedMesh)
-    if (!meshRef.current.instanceColor) {
-        meshRef.current.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
-    }
-    if (!outlineRef.current.instanceColor) {
-        outlineRef.current.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
-    }
+    if (!meshRef.current || !linesRef.current || params.paused) return;
 
     const { equilibriumDistance, stiffness, couplingDecay, phaseSyncRate, plasticity, chaosMode } = params;
+    const count = params.particleCount;
     const { x, v, phase, activation, target, hasTarget, memoryMatrix, regionID } = data.current;
     
-    // Check data integrity
     if (x.length === 0) return;
-
-    // OPTIMIZATION: Cache references to arrays to avoid object lookups in loop
-    // These accessors are now safe because of the checks above
-    const meshMatrices = meshRef.current.instanceMatrix.array;
-    const meshColors = meshRef.current.instanceColor.array;
-    const outlineMatrices = outlineRef.current.instanceMatrix.array;
-    const outlineColors = outlineRef.current.instanceColor.array;
-    const neighborList = spatialRef.current.neighborList;
-    const neighborCounts = spatialRef.current.neighborCounts;
 
     let activeTargetCount = 0;
     for(let k = 0; k < count; k++) if(hasTarget[k] === 1) activeTargetCount++;
     const hasActiveTargets = activeTargetCount > 0;
-    const damping = chaosMode ? 0.98 : (hasActiveTargets ? 0.6 : 0.90);
+    const damping = chaosMode ? 0.98 : (hasActiveTargets ? (plasticity > 0 ? 0.6 : 0.6) : 0.90);
 
     // Spatial Hashing
-    spatialRef.current.frameCounter++;
+    spatialRefs.current.frameCounter++;
     const CELL_SIZE = 5.0;
     const GRID_SIZE = 4096; 
-    
-    // OPTIMIZATION: Refresh grid less often (every 4 frames instead of 3)
-    if (spatialRef.current.frameCounter % 4 === 0) {
-        const { gridHead, gridNext } = spatialRef.current;
+    if (spatialRefs.current.frameCounter % 3 === 0) {
+        const { gridHead, gridNext, neighborList, neighborCounts } = spatialRefs.current;
         gridHead.fill(-1);
         neighborCounts.fill(0);
         for (let i = 0; i < count; i++) {
@@ -311,8 +290,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
       let phaseDelta = 0;
       const idx3 = i * 3;
       const ix = x[idx3], iy = x[idx3 + 1], iz = x[idx3 + 2];
+      const rid = regionID[i];
       const nOffset = i * 48; 
-      const nCount = neighborCounts[i];
+      const nCount = spatialRefs.current.neighborCounts[i];
 
       if (chaosMode) {
           fx += (Math.random() - 0.5) * 1.5;
@@ -336,15 +316,27 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
       const interactionStrength = hasTarget[i] ? 0.1 : 1.0;
       if (interactionStrength > 0.01) {
           for (let n = 0; n < nCount; n++) {
-            const j = neighborList[nOffset + n];
+            const j = spatialRefs.current.neighborList[nOffset + n];
+            const rj = regionID[j];
+            
+            // SPRINT 0: Semantic Partitioning (Inhibition)
+            // Block direct physical connections between Input A (0) and Input B (1)
+            if ((rid === 0 && rj === 1) || (rid === 1 && rj === 0)) continue;
+
             const dx = x[j*3] - ix; const dy = x[j*3+1] - iy; const dz = x[j*3+2] - iz;
             const distSq = dx*dx + dy*dy + dz*dz;
             if (distSq < 0.01 || distSq > 16.0) continue; 
             const dist = Math.sqrt(distSq);
             const r0 = equilibriumDistance; 
             let force = 0;
-            if (dist < r0) force = -stiffness * (r0 - dist) * 2.0;
-            else if (!hasTarget[i]) force = stiffness * (dist - r0) * 0.1;
+            
+            // SPRINT 0: Snap-to-Grid Physics
+            // Significantly stiffen bonds when not in input-driven mode to stabilize recall
+            // We also apply this during "Learning" (plasticity) to help crystallization
+            const stiffnessMult = (!hasActiveTargets || plasticity > 0) ? 8.0 : 1.0;
+
+            if (dist < r0) force = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
+            else if (!hasTarget[i]) force = stiffness * stiffnessMult * (dist - r0) * 0.1;
             
             force *= interactionStrength;
             const invDist = 1.0 / dist;
@@ -357,7 +349,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
                 linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
                 linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
                 
-                // INTENSE LINE GLOW
+                // INTENSE LINE GLOW: Overdrive the colors for bloom
+                // Cyan/Electric Blue color profile
                 lineColors[li] = 0; lineColors[li+1] = 2.0; lineColors[li+2] = 5.0; 
                 lineColors[li+3] = 0; lineColors[li+4] = 2.0; lineColors[li+5] = 5.0;
                 lineIndex++;
@@ -374,53 +367,50 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
       if (rSq > 2500) { x[idx3]*=0.99; x[idx3+1]*=0.99; x[idx3+2]*=0.99; }
       phase[i] += phaseSyncRate * phaseDelta + 0.05;
 
-      // OPTIMIZATION: Direct Buffer Writing (Avoiding THREE.Object3D / THREE.Color overhead)
-      // Matrix Layout: [sx, 0, 0, 0,  0, sy, 0, 0,  0, 0, sz, 0,  px, py, pz, 1]
+      // Update Matrices
+      TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
       const s = hasTarget[i] ? 0.25 : 0.35; 
-      const matIdx = i * 16;
-      
-      // Update Main Mesh Matrix
-      meshMatrices[matIdx] = s;
-      meshMatrices[matIdx+5] = s;
-      meshMatrices[matIdx+10] = s;
-      meshMatrices[matIdx+12] = x[idx3];
-      meshMatrices[matIdx+13] = x[idx3+1];
-      meshMatrices[matIdx+14] = x[idx3+2];
-      meshMatrices[matIdx+15] = 1;
-
-      // Update Outline Mesh Matrix
-      outlineMatrices[matIdx] = s;
-      outlineMatrices[matIdx+5] = s;
-      outlineMatrices[matIdx+10] = s;
-      outlineMatrices[matIdx+12] = x[idx3];
-      outlineMatrices[matIdx+13] = x[idx3+1];
-      outlineMatrices[matIdx+14] = x[idx3+2];
-      outlineMatrices[matIdx+15] = 1;
+      TEMP_OBJ.scale.set(s, s, s);
+      TEMP_OBJ.updateMatrix();
+      meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
+      if(outlineRef.current) outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
 
       // --- COLOR DYNAMICS ---
       const speed = Math.sqrt(v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2);
       const entropy = Math.min(1.0, speed * 0.5); 
 
-      const rid = regionID[i];
+      // Region Base Colors
+      // rid is defined above loop
       let r=0, g=0, b=0;
-      if (rid === 0) { r=0.1; g=1.0; b=1.0; } 
-      else if (rid === 1) { r=1.0; g=0.1; b=1.0; } 
-      else { r=1.0; g=0.8; b=0.0; } 
+      if (rid === 0) { r=0.1; g=1.0; b=1.0; } // Cyan
+      else if (rid === 1) { r=1.0; g=0.1; b=1.0; } // Magenta
+      else { r=1.0; g=0.8; b=0.0; } // Gold
 
-      const coreMix = entropy * 2.0;
-      const colIdx = i * 3;
+      // CORE: Dark metallic
+      const coreMix = entropy * 2.0; 
+      TEMP_COLOR.setRGB(r * coreMix, g * coreMix, b * coreMix); 
       
-      // Update Main Mesh Color
-      meshColors[colIdx] = r * coreMix;
-      meshColors[colIdx+1] = g * coreMix;
-      meshColors[colIdx+2] = b * coreMix;
+      // SPRINT 0: Visual Crystallization Feedback
+      // Flash white when particle is extremely stable (velocity approx 0)
+      if (speed < 0.008 && !chaosMode) {
+          const flash = 1.0 - (speed / 0.008); // 0 to 1
+          TEMP_COLOR.lerp(WHITE, flash * 0.8);
+      }
+      meshRef.current.setColorAt(i, TEMP_COLOR);
 
-      // Update Outline Mesh Color
+      // GLOW (HALO): Overdrive intensity for hot bloom
       const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
-      const glowIntensity = 2.5 + entropy * 4.0;
-      outlineColors[colIdx] = r * glowIntensity * pulse;
-      outlineColors[colIdx+1] = g * glowIntensity * pulse;
-      outlineColors[colIdx+2] = b * glowIntensity * pulse;
+      // High base intensity (2.5) + Entropy boost (4.0) = Very bright edges
+      const glowIntensity = 2.5 + entropy * 4.0; 
+      TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
+      
+      // Flash halo white too
+      if (speed < 0.008 && !chaosMode) {
+          const flash = 1.0 - (speed / 0.008);
+          TEMP_EMISSIVE.lerp(WHITE, flash);
+      }
+
+      if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
     }
 
     systemState.current.meanError = activeTargetCount > 0 ? totalError / activeTargetCount : 0;
@@ -444,13 +434,13 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
         <MeshBasicMaterial color="#ffffff" transparent opacity={0.05} wireframe />
       </InstancedMesh>
 
-      {/* OUTLINE / GLOW */}
+      {/* OUTLINE / GLOW: Higher opacity and Additive Blending */}
       <InstancedMesh ref={outlineRef} args={[undefined, undefined, params.particleCount]}>
         <SphereGeometry args={[0.42, 12, 12]} />
         <MeshBasicMaterial 
             color="#ffffff" 
             transparent 
-            opacity={0.6} 
+            opacity={0.6} // Increased opacity for stronger halo
             side={THREE.BackSide} 
             blending={THREE.AdditiveBlending} 
             depthWrite={false}
@@ -458,7 +448,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
         />
       </InstancedMesh>
 
-      {/* CORE MESH */}
+      {/* CORE MESH: Standard Material for shiny dark surface */}
       <InstancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
         <SphereGeometry args={[0.22, 16, 16]} /> 
         <MeshStandardMaterial 
@@ -471,202 +461,46 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, spatia
       </InstancedMesh>
 
       <LineSegments ref={linesRef} geometry={lineGeometry}>
+        {/* LINE GLOW: Increased opacity */}
         <LineBasicMaterial vertexColors={true} transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </LineSegments>
     </>
   );
 };
 
-interface SynapticMatrixProps {
-  dataRef: React.MutableRefObject<ParticleData>;
-  spatialRef: React.MutableRefObject<SpatialData>;
-  count: number;
-  params: SimulationParams;
-}
-
-const SynapticMatrix: React.FC<SynapticMatrixProps> = ({ dataRef, spatialRef, count, params }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const bufferRef = useRef<Uint8ClampedArray | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const paramsRef = useRef(params);
-
-  // Keep params current for the closure
-  useEffect(() => { paramsRef.current = params; }, [params]);
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    // Initialize buffer if needed
-    // 1200 * 1200 * 4 bytes = ~5.7 MB. Safe.
-    const size = count * count * 4;
-    if (!bufferRef.current || bufferRef.current.length !== size) {
-        bufferRef.current = new Uint8ClampedArray(size);
-        bufferRef.current.fill(0);
-        // Set Alpha to 255 initially (opaque black)
-        for (let i = 3; i < size; i+=4) bufferRef.current[i] = 255; 
-        
-        // Ensure exact 1:1 pixel match for matrix
-        canvasRef.current.width = count;
-        canvasRef.current.height = count;
-        
-        // Clear logic
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, count, count);
-    }
-    
-    // Create ImageData object once we reuse
-    const imgData = ctx.createImageData(count, count);
-
-    // High performance visual loop (10 FPS)
-    const draw = () => {
-        if (!canvasRef.current || !bufferRef.current) return;
-        
-        // FREEZE LOGIC:
-        // If in Chaos Mode (High Entropy), we STOP updating the buffer.
-        // This preserves the pattern formed during the previous cycle (Persistence).
-        if (paramsRef.current.chaosMode) {
-             return; 
-        }
-
-        const { regionID } = dataRef.current;
-        const { neighborList, neighborCounts } = spatialRef.current;
-        const buffer = bufferRef.current;
-        const width = count;
-
-        // 1. FADE STEP (Bitwise Optimized)
-        // Slower decay (0.96) allows trails to accumulate better.
-        // Bitwise | 0 is faster than Math.floor
-        for (let k = 0; k < buffer.length; k += 4) {
-            const r = buffer[k], g = buffer[k+1], b = buffer[k+2];
-            if (r > 0) buffer[k] = (r * 0.96) | 0;
-            if (g > 0) buffer[k+1] = (g * 0.96) | 0;
-            if (b > 0) buffer[k+2] = (b * 0.96) | 0;
-            // Alpha stays 255
-        }
-
-        // 2. DRAW ACTIVE CONNECTIONS
-        const maxNeighbors = 48; // Must match ParticleSystem constant
-        
-        for (let i = 0; i < count; i++) {
-            const nCount = neighborCounts[i];
-            const offset = i * maxNeighbors;
-            const ri = regionID[i];
-
-            for (let n = 0; n < nCount; n++) {
-                const j = neighborList[offset + n];
-                
-                // Color Logic
-                const rj = regionID[j];
-                let r=255, g=255, b=255;
-                if (ri === rj) {
-                    if (ri === 0) { r=0; g=255; b=255; } 
-                    else if (ri === 1) { r=255; g=0; b=255; } 
-                    else { r=255; g=200; b=0; } 
-                } else {
-                     r=100; g=100; b=100;
-                }
-
-                // Plot (i, j)
-                const idx1 = (i * width + j) * 4;
-                if (r > buffer[idx1]) buffer[idx1] = r;
-                if (g > buffer[idx1+1]) buffer[idx1+1] = g;
-                if (b > buffer[idx1+2]) buffer[idx1+2] = b;
-
-                // Plot (j, i) - Symmetric
-                const idx2 = (j * width + i) * 4;
-                if (r > buffer[idx2]) buffer[idx2] = r;
-                if (g > buffer[idx2+1]) buffer[idx2+1] = g;
-                if (b > buffer[idx2+2]) buffer[idx2+2] = b;
-            }
-        }
-
-        // 3. UPLOAD TO CANVAS
-        imgData.data.set(buffer);
-        ctx.putImageData(imgData, 0, 0);
-    };
-
-    const interval = setInterval(draw, 100); // 10 FPS
-    return () => clearInterval(interval);
-  }, [count]);
-
-  const download = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      const link = document.createElement('a');
-      link.download = 'synaptic_map.png';
-      link.href = canvasRef.current!.toDataURL();
-      link.click();
-  };
-
-  const wrapperClass = expanded 
-    ? "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80vh] h-[80vh] z-[100] bg-black border-2 border-cyan-400 shadow-[0_0_100px_rgba(6,182,212,0.5)] p-2"
-    : "absolute bottom-6 left-6 w-48 h-48 bg-black/90 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] cursor-pointer hover:border-cyan-400 hover:shadow-[0_0_25px_rgba(6,182,212,0.4)] transition-all overflow-hidden group";
-
-  return (
-    <>
-      {expanded && <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[90]" onClick={() => setExpanded(false)} />}
-      
-      <div className={wrapperClass} onClick={() => !expanded && setExpanded(true)}>
-         <canvas ref={canvasRef} className="w-full h-full object-contain bg-black" />
-         
-         {/* Overlays */}
-         <div className="absolute top-0 left-0 w-full flex justify-between items-start p-2 pointer-events-none">
-            <div className="bg-black/70 px-2 py-1 text-xs text-cyan-400 font-bold font-mono border-l-2 border-cyan-500">
-                PERSISTENT_MEMORY_MAP
-            </div>
-            {expanded && (
-                <div className="flex gap-2 pointer-events-auto">
-                    <button onClick={download} className="bg-black/80 border border-cyan-500 text-cyan-400 px-3 py-1 text-xs hover:bg-cyan-500 hover:text-black font-bold transition-colors">
-                        SAVE_IMG
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); setExpanded(false); }} className="bg-red-900/20 border border-red-500 text-red-500 px-3 py-1 text-xs hover:bg-red-500 hover:text-black font-bold transition-colors">
-                        CLOSE
-                    </button>
-                </div>
-            )}
-         </div>
-         
-         {!expanded && (
-            <div className="absolute bottom-0 right-0 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <div className="text-[9px] text-cyan-300 bg-black/80 px-1 border border-cyan-500/30">EXPAND</div>
-            </div>
-         )}
-      </div>
-    </>
-  );
-};
-
-// ... RegionGuides ... (Unchanged)
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
-    if (!params.showRegions) return null;
+    // Enabled by default as per Sprint 0 pending improvement request
     return (
-        <group>
-            <Cylinder args={[14, 14, 7, 6]} position={[0, 10.5, 0]}>
-                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.05} />
+        <group visible={params.showRegions || true}>
+            {/* Region 0 (Cyan) - Input A */}
+            <Cylinder args={[18, 18, 10, 6]} position={[-20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
+                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.03} />
             </Cylinder>
-            <Cylinder args={[14, 14, 7, 6]} position={[0, 3.5, 0]}>
-                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.05} />
+             {/* Region 1 (Pink) - Input B */}
+            <Cylinder args={[18, 18, 10, 6]} position={[20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
+                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.03} />
             </Cylinder>
-            <Cylinder args={[14, 14, 14, 6]} position={[0, -7, 0]}>
-                <meshBasicMaterial color="#FFAA00" wireframe transparent opacity={0.05} />
+            {/* Region 2 (Gold) - Associative Center */}
+            <Cylinder args={[15, 15, 20, 8]} position={[0, 0, 0]}>
+                <meshBasicMaterial color="#FFAA00" wireframe transparent opacity={0.03} />
             </Cylinder>
         </group>
     );
 };
 
-// ... UIOverlay ... (Unchanged)
+// --- UI Overlay ---
+
 interface UIOverlayProps {
-    params: SimulationParams;
-    setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
-    dataRef: React.MutableRefObject<ParticleData>;
+  params: SimulationParams;
+  setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
+  dataRef: React.MutableRefObject<ParticleData>;
 }
 
 const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => {
   const [localText, setLocalText] = useState("");
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'auto' | 'manual'>('auto');
-  const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'chaos' | 'stabilize' | 'form' | 'learning' | 'save_dissolve' | 'loop_chaos'>('chaos');
+  const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'chaos' | 'stabilize' | 'form' | 'learning' | 'save_dissolve' | 'loop_chaos'>('idle');
   const [autoStatus, setAutoStatus] = useState("");
 
   const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
@@ -680,7 +514,12 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
   const forgetCurrentMemory = () => handleChange('memoryResetTrigger', params.memoryResetTrigger + 1);
 
   const togglePlasticity = (active: boolean) => {
-      if (active) setParams(prev => ({ ...prev, plasticity: 0.1, damping: 0.95, dataGravity: Math.max(prev.dataGravity, 0.5) }));
+      if (active) setParams(prev => ({ 
+          ...prev, 
+          plasticity: 0.1, 
+          damping: 0.5, // Increased drag (lower value) to aid Crystallization (Phase 4)
+          dataGravity: Math.max(prev.dataGravity, 0.5) 
+      }));
       else setParams(prev => ({ ...prev, plasticity: 0, damping: 0.85 }));
   };
 
@@ -688,48 +527,60 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
     setParams(prev => ({ ...prev, memoryAction: { type, slot, triggerId: prev.memoryAction.triggerId + 1 } }));
   };
 
-  // Auto-Pilot Cycle - SPEED TUNED
+  // Step-by-Step Experiment Controller
   useEffect(() => {
-    if (autoRunPhase === 'idle' || params.paused) return;
-    let timer: ReturnType<typeof setTimeout>;
+    if (autoRunPhase === 'idle') return;
 
     if (autoRunPhase === 'reset') {
-        setAutoStatus("SYSTEM_RESET");
+        setAutoStatus("SYSTEM_RESET: MEMORY CLEARED");
         setParams(DEFAULT_PARAMS);
         setLocalText("");
-        timer = setTimeout(() => setAutoRunPhase('chaos'), 500);
     } 
     else if (autoRunPhase === 'chaos') {
-        setAutoStatus("ENTROPY_INJECTION_MODE");
+        setAutoStatus("PHASE 1: ENTROPY INJECTION (High Energy State)");
         setParams(prev => ({ ...prev, chaosMode: true, inputText: "" }));
-        timer = setTimeout(() => setAutoRunPhase('stabilize'), 4000); // 4s chaos (increased)
     }
     else if (autoRunPhase === 'stabilize') {
-        setAutoStatus("FIELD_STABILIZATION");
+        setAutoStatus("PHASE 2: FIELD STABILIZATION (Cooling)");
         setParams(prev => ({ ...prev, chaosMode: false, inputText: "" }));
-        timer = setTimeout(() => setAutoRunPhase('form'), 3000); // 3s stabilize (increased)
     }
     else if (autoRunPhase === 'form') {
         const word = "QUANTUM";
-        setAutoStatus(`PATTERN_EMERGENCE: "${word}"`);
+        setAutoStatus(`PHASE 3: PATTERN EMERGENCE ("${word}")`);
         setLocalText(word);
         setParams(prev => ({ ...prev, chaosMode: false, inputText: word, dataGravity: 0.4 }));
-        timer = setTimeout(() => setAutoRunPhase('learning'), 8000); // 8s form/recall (significantly increased)
     }
     else if (autoRunPhase === 'learning') {
-        setAutoStatus("NEURAL_CRYSTALLIZATION");
+        setAutoStatus("PHASE 4: NEURAL CRYSTALLIZATION (Plasticity ON)");
         togglePlasticity(true);
-        timer = setTimeout(() => setAutoRunPhase('save_dissolve'), 6000); // 6s learning (doubled)
     }
     else if (autoRunPhase === 'save_dissolve') {
-        setAutoStatus("STRUCTURE_DISSOLUTION");
+        setAutoStatus("PHASE 5: DISSOLUTION & RESET");
         togglePlasticity(false);
         setLocalText("");
         setParams(prev => ({ ...prev, inputText: "" }));
-        timer = setTimeout(() => setAutoRunPhase('chaos'), 2500); // 2.5s dissolve
     }
-    return () => clearTimeout(timer);
-  }, [autoRunPhase, params.paused]);
+  }, [autoRunPhase]);
+
+  const nextStep = () => {
+      const phases: typeof autoRunPhase[] = ['idle', 'reset', 'chaos', 'stabilize', 'form', 'learning', 'save_dissolve'];
+      const currentIndex = phases.indexOf(autoRunPhase);
+      const nextIndex = (currentIndex + 1) % phases.length;
+      setAutoRunPhase(phases[nextIndex]);
+  };
+
+  const getNextButtonText = () => {
+      switch(autoRunPhase) {
+          case 'idle': return "START EXPERIMENT";
+          case 'reset': return "INJECT CHAOS >>";
+          case 'chaos': return "STABILIZE FIELD >>";
+          case 'stabilize': return "SEED PATTERN >>";
+          case 'form': return "ENABLE LEARNING >>";
+          case 'learning': return "DISSOLVE >>";
+          case 'save_dissolve': return "FINISH EXPERIMENT";
+          default: return "NEXT >>";
+      }
+  };
 
   const startAutoRun = () => setAutoRunPhase('reset');
 
@@ -760,27 +611,33 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
 
         {/* Tab Switcher */}
         <div className="flex border-b border-cyan-800">
-            <button onClick={() => setActiveTab('auto')} className={`flex-1 py-1 text-xs font-bold uppercase ${activeTab === 'auto' ? 'bg-cyan-900/50 text-cyan-300 border-b-2 border-cyan-400' : 'text-cyan-800 hover:text-cyan-500'}`}>Auto_Cycle</button>
+            <button onClick={() => setActiveTab('auto')} className={`flex-1 py-1 text-xs font-bold uppercase ${activeTab === 'auto' ? 'bg-cyan-900/50 text-cyan-300 border-b-2 border-cyan-400' : 'text-cyan-800 hover:text-cyan-500'}`}>Step-by-Step</button>
             <button onClick={() => setActiveTab('manual')} className={`flex-1 py-1 text-xs font-bold uppercase ${activeTab === 'manual' ? 'bg-purple-900/30 text-purple-300 border-b-2 border-purple-500' : 'text-cyan-800 hover:text-cyan-500'}`}>Manual_Override</button>
         </div>
 
-        {/* AUTO VIEW */}
+        {/* AUTO VIEW (Now Step-by-Step) */}
         {activeTab === 'auto' && (
             <div className="space-y-3 pt-2">
                 <div className="bg-cyan-950/30 border border-cyan-500/20 p-3 text-center relative">
                     {autoRunPhase === 'idle' ? (
-                        <button onClick={startAutoRun} className={`w-full py-2 ${btnClass} text-xs`}>INITIATE_SEQUENCE</button>
+                        <button onClick={() => setAutoRunPhase('reset')} className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-sm tracking-widest shadow-[0_0_20px_rgba(6,182,212,0.6)] animate-pulse clip-corner transition-all">
+                            INITIALIZE EXPERIMENT
+                        </button>
                     ) : (
                         <div className="text-left">
-                             <div className="flex items-center gap-2 mb-1">
-                                <div className="w-2 h-2 bg-cyan-400 animate-ping"></div>
-                                <span className="text-xs text-cyan-300 font-bold tracking-widest">RUNNING_DAEMON</span>
+                             <div className="flex items-center gap-2 mb-2 border-b border-cyan-800 pb-2">
+                                <div className="w-2 h-2 bg-green-400 animate-pulse"></div>
+                                <span className="text-xs text-cyan-300 font-bold tracking-widest">PHASE: {autoRunPhase.toUpperCase()}</span>
                              </div>
-                             <p className="text-xs text-white font-mono bg-black/50 p-1 border-l-2 border-cyan-500 pl-2">{autoStatus}</p>
-                             {/* Progress Bar visual */}
-                             <div className="h-1 w-full bg-black mt-2 overflow-hidden">
-                                <div className="h-full bg-cyan-500 animate-progress"></div>
-                             </div>
+                             
+                             <p className="text-xs text-white font-mono bg-black/50 p-2 border-l-2 border-cyan-500 mb-3 min-h-[40px]">
+                                {autoStatus}
+                             </p>
+
+                             <button onClick={nextStep} className="w-full py-2 bg-cyan-700 hover:bg-cyan-500 text-white font-bold text-xs tracking-widest border border-cyan-400/50 transition-all flex justify-between px-4 items-center group">
+                                <span>{getNextButtonText()}</span>
+                                <span className="group-hover:translate-x-1 transition-transform">>></span>
+                             </button>
                         </div>
                     )}
                 </div>
@@ -874,7 +731,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
 
 // --- Main App ---
 
-const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.MutableRefObject<ParticleData>, spatialRef: React.MutableRefObject<SpatialData> }> = ({ params, dataRef, spatialRef }) => {
+const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.MutableRefObject<ParticleData> }> = ({ params, dataRef }) => {
   return (
     <Canvas camera={{ position: [0, 0, 35], fov: 45 }} gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
         <color attach="background" args={['#020205']} />
@@ -892,7 +749,7 @@ const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.Muta
         {/* Digital Floor Grid */}
         <Grid position={[0, -15, 0]} args={[100, 100]} cellSize={4} sectionSize={20} sectionColor="#06b6d4" cellColor="#1e293b" fadeDistance={60} />
 
-        <ParticleSystem params={params} dataRef={dataRef} spatialRef={spatialRef} />
+        <ParticleSystem params={params} dataRef={dataRef} />
         <RegionGuides params={params} />
         
         {/* Post Processing for the GLOW */}
@@ -926,22 +783,12 @@ function App() {
     lastActiveTime: new Float32Array(0),
   });
 
-  const spatialRef = useRef<SpatialData>({
-      gridHead: new Int32Array(0),
-      gridNext: new Int32Array(0),
-      neighborList: new Int32Array(0),
-      neighborCounts: new Int32Array(0),
-      frameCounter: 0
-  });
-
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans select-none">
-      <SimulationCanvas params={params} dataRef={dataRef} spatialRef={spatialRef} />
+      <SimulationCanvas params={params} dataRef={dataRef} />
       
       <UIOverlay params={params} setParams={setParams} dataRef={dataRef} />
       
-      <SynapticMatrix dataRef={dataRef} spatialRef={spatialRef} count={params.particleCount} params={params} />
-
       {/* Futuristic Header */}
       <div className="absolute top-6 left-6 pointer-events-none hidden md:block mix-blend-screen">
         <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-500 tracking-tighter" style={{ fontFamily: 'Rajdhani' }}>
