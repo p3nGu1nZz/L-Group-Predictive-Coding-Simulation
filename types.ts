@@ -1,3 +1,4 @@
+
 export type MemoryActionType = 'idle' | 'save' | 'load' | 'clear';
 
 export interface MemoryAction {
@@ -39,6 +40,14 @@ export interface ParticleData {
   feedbackMatrix: Float32Array;
   delayedActivation: Float32Array;
   lastActiveTime: Float32Array;
+}
+
+export interface TestResult {
+  testName: string;
+  score: number;
+  maxScore: number;
+  status: 'PASS' | 'FAIL';
+  details: string;
 }
 
 export const CONSTANTS = {

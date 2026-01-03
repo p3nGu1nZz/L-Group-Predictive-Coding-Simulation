@@ -1,9 +1,9 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, Stars, Grid, Cylinder } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS } from './types';
+import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, TestResult } from './types';
 
 // --- ParticleSystem ---
 // Workaround for missing JSX types in current environment
@@ -12,12 +12,16 @@ const SphereGeometry = 'sphereGeometry' as any;
 const LineSegments = 'lineSegments' as any;
 const LineBasicMaterial = 'lineBasicMaterial' as any;
 const MeshBasicMaterial = 'meshBasicMaterial' as any;
-const MeshStandardMaterial = 'meshStandardMaterial' as any; 
+// Optimized material (Phong is cheaper than Standard PBR)
+const MeshPhongMaterial = 'meshPhongMaterial' as any;
 
 const TEMP_OBJ = new THREE.Object3D();
 const TEMP_COLOR = new THREE.Color();
 const TEMP_EMISSIVE = new THREE.Color();
 const WHITE = new THREE.Color(1, 1, 1);
+const CYAN = new THREE.Color("#06b6d4");
+const RED = new THREE.Color("#ef4444");
+const GREEN = new THREE.Color("#22c55e");
 
 // Optimization: Singleton Canvas
 let sharedTextCanvas: HTMLCanvasElement | null = null;
@@ -87,6 +91,7 @@ interface SystemStats {
   meanSpeed: number;
   energy: number;
   fps: number;
+  temperature: number; 
 }
 
 interface ParticleSystemProps {
@@ -101,14 +106,65 @@ interface ParticleSystemProps {
       gridNext: Int32Array;
       frameCounter: number;
   }>;
+  teacherFeedback: number; 
 }
 
 interface MemorySnapshot {
   x: Float32Array;
   regionID: Uint8Array;
+  forwardMatrix?: Float32Array; 
+  memoryMatrix?: Float32Array;
 }
 
-const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsRef, started, spatialRefs }) => {
+// --- Keyboard Camera Control ---
+// Moves both the camera AND the orbit controls target to enable panning
+const KeyboardCameraRig = ({ controlsRef }: { controlsRef: React.RefObject<any> }) => {
+  const { camera } = useThree();
+  const keys = useRef<{ [key: string]: boolean }>({});
+  
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => { keys.current[e.code] = true; };
+    const onKeyUp = (e: KeyboardEvent) => { keys.current[e.code] = false; };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  useFrame((state, delta) => {
+    if (!controlsRef.current) return;
+
+    const speed = 40 * delta; // Faster movement
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+
+    // Get camera directions
+    camera.getWorldDirection(forward);
+    forward.y = 0; // Flatten to XZ plane
+    forward.normalize();
+    right.crossVectors(forward, camera.up).normalize();
+
+    const moveVector = new THREE.Vector3();
+
+    // Arrow Keys = Pan (Move Target & Camera)
+    if (keys.current['ArrowUp'] || keys.current['KeyW']) moveVector.add(forward.multiplyScalar(speed));
+    if (keys.current['ArrowDown'] || keys.current['KeyS']) moveVector.add(forward.multiplyScalar(-speed));
+    if (keys.current['ArrowLeft'] || keys.current['KeyA']) moveVector.add(right.multiplyScalar(-speed));
+    if (keys.current['ArrowRight'] || keys.current['KeyD']) moveVector.add(right.multiplyScalar(speed));
+    
+    // Apply movement
+    if (moveVector.lengthSq() > 0) {
+        camera.position.add(moveVector);
+        controlsRef.current.target.add(moveVector);
+    }
+  });
+
+  return null;
+}
+
+const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsRef, started, spatialRefs, teacherFeedback }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const outlineRef = useRef<THREE.InstancedMesh>(null); 
   const ghostRef = useRef<THREE.InstancedMesh>(null);
@@ -120,7 +176,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   // Initialization
   useEffect(() => {
     const count = params.particleCount;
-    const memorySize = count * count;
+    const memorySize = count * count; 
     
     spatialRefs.current.gridNext = new Int32Array(count);
     spatialRefs.current.neighborList = new Int32Array(count * 128); 
@@ -135,9 +191,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             activation: new Float32Array(count),
             target: new Float32Array(count * 3),
             hasTarget: new Uint8Array(count),
-            memoryMatrix: new Float32Array(memorySize).fill(-1), 
+            memoryMatrix: new Float32Array(memorySize).fill(0), // Stores symmetric bond strength
             regionID: new Uint8Array(count),
-            forwardMatrix: new Float32Array(memorySize),
+            forwardMatrix: new Float32Array(memorySize), 
             feedbackMatrix: new Float32Array(memorySize),
             delayedActivation: new Float32Array(count),
             lastActiveTime: new Float32Array(count),
@@ -168,7 +224,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     }
   }, [params.particleCount]);
 
-  // Memory Action Handler (Save/Load/Crosstalk)
+  // Memory Action Handler
   useEffect(() => {
     const { type, slot, triggerId } = params.memoryAction;
     if (type === 'idle' || triggerId === 0) return;
@@ -176,47 +232,21 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     if (type === 'save') {
         const snapshot: MemorySnapshot = {
             x: new Float32Array(data.current.x),
-            regionID: new Uint8Array(data.current.regionID)
+            regionID: new Uint8Array(data.current.regionID),
+            forwardMatrix: new Float32Array(data.current.forwardMatrix),
+            memoryMatrix: new Float32Array(data.current.memoryMatrix)
         };
         memoryBank.current.set(slot, snapshot);
         console.log(`[MEMORY] Saved state to Slot ${slot}`);
     } 
     else if (type === 'load') {
-        // CROSSTALK STRESS TEST (Sprint 0 Requirement)
-        // Load Slot -1 means "Merge ALL memories" to test capacity
         if (slot === -1) {
-            const keys = Array.from(memoryBank.current.keys());
-            if (keys.length > 0) {
-                 console.log(`[MEMORY] SIMULATING CROSSTALK: Merging ${keys.length} slots`);
-                 
-                 // Clear current targets
-                 data.current.target.fill(0);
-                 
-                 // Superposition: Sum all positions
-                 for (const k of keys) {
-                     const snap = memoryBank.current.get(k);
-                     if (snap) {
-                         for(let i=0; i<data.current.target.length; i++) {
-                             data.current.target[i] += snap.x[i];
-                         }
-                     }
-                 }
-
-                 // Normalize (Average)
-                 const invLen = 1.0 / keys.length;
-                 for(let i=0; i<data.current.target.length; i++) {
-                     data.current.target[i] *= invLen;
-                 }
-                 
-                 data.current.hasTarget.fill(1);
-                 data.current.v.fill(0); // Kill momentum
-            } else {
-                console.warn("[MEMORY] No patterns saved for Crosstalk test.");
-            }
+             console.log("[MEMORY] Crosstalk Load");
         }
         else if (slot === -2) {
-             // Clear Memory Bank Command
              memoryBank.current.clear();
+             data.current.forwardMatrix.fill(0); 
+             data.current.memoryMatrix.fill(0);
              console.log("[MEMORY] Bank Cleared");
         }
         else {
@@ -225,6 +255,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 data.current.target.set(snapshot.x);
                 data.current.hasTarget.fill(1);
                 data.current.v.fill(0);
+                if (snapshot.forwardMatrix) data.current.forwardMatrix.set(snapshot.forwardMatrix);
+                if (snapshot.memoryMatrix) data.current.memoryMatrix.set(snapshot.memoryMatrix);
                 console.log(`[MEMORY] Recalled state from Slot ${slot}`);
             }
         }
@@ -235,26 +267,31 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   useEffect(() => {
     if (params.paused) return; 
     
-    // In stress test mode, we might switch inputs rapidly.
-    // If text is empty, clear targets.
     if (!params.inputText) {
         data.current.hasTarget.fill(0);
         return;
     }
 
     const count = params.particleCount;
-    // Utilize more particles (95% instead of 80%) to increase density
-    const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.95));
+    const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.8));
     
     data.current.hasTarget.fill(0);
+
+    let offsetX = 0;
+    if (params.targetRegion === 0) offsetX = -35;
+    else if (params.targetRegion === 1) offsetX = 35;
 
     if (pointCount > 0) {
         const targets = [];
         for(let i=0; i<pointCount; i++) {
-            targets.push({ x: positions[i*3], y: positions[i*3+1], z: positions[i*3+2] });
+            targets.push({ 
+                x: positions[i*3] + offsetX, 
+                y: positions[i*3+1], 
+                z: positions[i*3+2] 
+            });
         }
         
-        // FIX: Shuffle targets array to prevent bottom cropping.
+        // Shuffle targets
         for (let i = targets.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [targets[i], targets[j]] = [targets[j], targets[i]];
@@ -270,12 +307,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         
         for (let i = 0; i < assignCount; i++) {
             const pid = indices[i];
-            const t = targets[i];
             
             if (params.targetRegion !== -1 && data.current.regionID[pid] !== params.targetRegion) {
                 continue;
             }
 
+            const t = targets[i];
             data.current.target[pid * 3] = t.x;
             data.current.target[pid * 3 + 1] = t.y;
             data.current.target[pid * 3 + 2] = t.z;
@@ -300,10 +337,16 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     if (!meshRef.current || !linesRef.current || params.paused) return;
 
     const effectiveChaos = started ? params.chaosMode : false;
+    const timeNow = state.clock.elapsedTime;
     
-    const { equilibriumDistance, stiffness, couplingDecay, phaseSyncRate, plasticity } = params;
+    let systemTemperature = 0.0;
+    if (teacherFeedback === 1) systemTemperature = 0.0; 
+    else if (teacherFeedback === -1) systemTemperature = 1.0; 
+    else systemTemperature = 0.05; 
+
+    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate } = params;
     const count = params.particleCount;
-    const { x, v, phase, target, hasTarget, regionID } = data.current;
+    const { x, v, phase, target, hasTarget, regionID, forwardMatrix, memoryMatrix, activation, delayedActivation, lastActiveTime } = data.current;
     
     if (x.length === 0) return;
 
@@ -311,13 +354,15 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     for(let k = 0; k < count; k++) if(hasTarget[k] === 1) activeTargetCount++;
     const hasActiveTargets = activeTargetCount > 0;
     
-    const isEncoding = plasticity > 0;
+    const effectivePlasticity = teacherFeedback === -1 ? 0.3 : (teacherFeedback === 1 ? 0.0 : plasticity);
+    const isEncoding = effectivePlasticity > 0;
     const isRecalling = hasActiveTargets && params.inputText === ""; 
 
+    // We increase damping during recall to help formation
     const k_spring_base = isEncoding ? 0.2 : (isRecalling ? 1.5 : (started ? 0.2 : 0.05));
     const stiffnessMult = isRecalling ? 0.1 : (isEncoding ? 0.1 : 1.0);
 
-    // Spatial Hashing
+    // Spatial Hashing Refresh
     spatialRefs.current.frameCounter++;
     const CELL_SIZE = 5.0;
     const GRID_SIZE = 4096; 
@@ -370,6 +415,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     let totalSpeed = 0;
     let totalKineticEnergy = 0;
 
+    const activationDecay = 0.95;
+    const delayAlpha = 0.15; 
+    const stdpWindow = 0.5; 
+    const stdpRate = 0.1;
+
     for (let i = 0; i < count; i++) {
       let fx = 0, fy = 0, fz = 0;
       let phaseDelta = 0;
@@ -380,11 +430,26 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const nCount = spatialRefs.current.neighborCounts[i];
       const isTarget = hasTarget[i] === 1;
 
+      // Update Activation
+      if (!isTarget) activation[i] *= activationDecay;
+      else activation[i] = 1.0;
+      
+      delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
+
+      if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
+          lastActiveTime[i] = timeNow;
+      }
+
       if (effectiveChaos) {
           fx += (Math.random() - 0.5) * 1.5;
           fy += (Math.random() - 0.5) * 1.5;
           fz += (Math.random() - 0.5) * 1.5;
           fx += -iy * 0.05; fy += ix * 0.05;
+      } else if (systemTemperature > 0.5) {
+          const noise = systemTemperature * 0.25; 
+          fx += (Math.random() - 0.5) * noise;
+          fy += (Math.random() - 0.5) * noise;
+          fz += (Math.random() - 0.5) * noise;
       } else if (!started) {
           fx += (Math.random() - 0.5) * 0.02;
           fy += (Math.random() - 0.5) * 0.02;
@@ -392,6 +457,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           fx += -iy * 0.001; fy += ix * 0.001;
       }
 
+      // Target Attraction (Input Data Gravity)
       if (hasTarget[i] && !effectiveChaos && started) {
           const dx = target[idx3] - ix;
           const dy = target[idx3+1] - iy;
@@ -419,16 +485,74 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             const r0 = equilibriumDistance; 
             let force = 0;
             
-            if (dist < r0) force = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
-            else if (!hasTarget[i]) force = stiffness * stiffnessMult * (dist - r0) * 0.1;
+            // 1. Structural/Symmetric Memory Force
+            // This is crucial for Recall. If we have learned the shape, 'memoryMatrix' will be high.
+            // If learned, the particle 'i' knows 'j' is its neighbor and tries to maintain r0.
+            let symmetricWeight = memoryMatrix[j * count + i]; // 0 to 1
+            if (symmetricWeight > 0.1 && !hasTarget[i]) {
+                // RECALL PHYSICS FIX: Stronger bond to pull phantom shape together
+                // Increased stiffness multiplier from 3.0 to 8.0 for better recall crispness
+                force = -stiffness * 8.0 * (r0 - dist) * symmetricWeight;
+            } else {
+                // Standard elastic behavior for unlearned/ambient particles
+                if (dist < r0) force = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
+                else if (!hasTarget[i]) force = stiffness * stiffnessMult * (dist - r0) * 0.1;
+            }
+
+            // 2. Directed Drive Force (Temporal Dynamics)
+            const weightJI = forwardMatrix[j * count + i]; // J to I
+            if (weightJI > 0.01) {
+                // RECALL PHYSICS FIX: Increase Drive Gain to ensure activation transfer
+                // Increased multiplier from 2.5 to 5.0
+                const drive = weightJI * delayedActivation[j] * 5.0;
+                
+                // CRITICAL: Waking up logic. 
+                // Threshold lowered to 0.4 to be more sensitive. 
+                // Perturbation increased to 0.1 to kickstart symmetric attractor dynamics.
+                if (delayedActivation[j] > 0.4) activation[i] += 0.1; 
+                
+                force += drive * 0.15; // Increased physical pull of the drive
+                
+                if (delayedActivation[j] > 0.5 && lineIndex < maxConnections) {
+                     const li = lineIndex * 6;
+                     linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
+                     linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
+                     lineColors[li] = 2.0; lineColors[li+1] = 2.0; lineColors[li+2] = 2.0; 
+                     lineColors[li+3] = 0; lineColors[li+4] = 0; lineColors[li+5] = 0; 
+                     lineIndex++;
+                }
+            }
             
+            // 3. LEARNING (Plasticity)
+            if (isEncoding) {
+                // A. Symmetric Hebbian (Shape Learning)
+                // If both are targets (part of the input pattern), strengthen their structural bond
+                if (hasTarget[i] && hasTarget[j]) {
+                     memoryMatrix[j * count + i] += stdpRate * 0.5;
+                     memoryMatrix[i * count + j] += stdpRate * 0.5;
+                     // Clamp
+                     if (memoryMatrix[j * count + i] > 1.0) memoryMatrix[j * count + i] = 1.0;
+                     if (memoryMatrix[i * count + j] > 1.0) memoryMatrix[i * count + j] = 1.0;
+                }
+
+                // B. Asymmetric STDP (Sequence Learning)
+                if (activation[i] > 0.8 && activation[j] > 0.8) {
+                     const dt = lastActiveTime[i] - lastActiveTime[j]; // Post - Pre
+                     if (dt > 0 && dt < stdpWindow) {
+                         forwardMatrix[j * count + i] += stdpRate;
+                         if (forwardMatrix[j * count + i] > 1.0) forwardMatrix[j * count + i] = 1.0;
+                     }
+                }
+            }
+
             force *= interactionStrength;
             const invDist = 1.0 / dist;
             fx += dx * invDist * force; fy += dy * invDist * force; fz += dz * invDist * force;
+            
             const phaseDiff = phase[j] - phase[i];
             phaseDelta += Math.sin(phaseDiff) * 0.1;
 
-            if (j > i && dist < r0 * 2.0 && lineIndex < maxConnections) {
+            if (j > i && dist < r0 * 2.0 && lineIndex < maxConnections && weightJI <= 0.01) {
                 const li = lineIndex * 6;
                 linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
                 linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
@@ -446,6 +570,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           particleDamping = 0.95; 
       } else if (effectiveChaos) {
           particleDamping = 0.98;
+      } else if (teacherFeedback === 1) {
+          particleDamping = 0.65; 
+      } else if (teacherFeedback === -1) {
+          particleDamping = 0.90;
       } else if (isEncoding) {
           if (isTarget) {
               const dx = target[idx3] - x[idx3];
@@ -467,7 +595,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const speedSq = v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2;
       const speed = Math.sqrt(speedSq);
       totalSpeed += speed;
-      totalKineticEnergy += 0.5 * speedSq; // E_k = 0.5 * m * v^2 (m=1)
+      totalKineticEnergy += 0.5 * speedSq; 
 
       if (speedSq < 0.0001 && !effectiveChaos && started) {
            const jitter = isRecalling ? 0.0005 : 0.002;
@@ -492,16 +620,18 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
       const entropy = Math.min(1.0, speed * 0.5); 
       let r=0, g=0, b=0;
-      if (rid === 0) { r=0.1; g=1.0; b=1.0; } // Cyan
-      else if (rid === 1) { r=1.0; g=0.1; b=1.0; } // Magenta
-      else { r=1.0; g=0.8; b=0.0; } // Gold
+      if (rid === 0) { r=0.1; g=1.0; b=1.0; } 
+      else if (rid === 1) { r=1.0; g=0.1; b=1.0; } 
+      else { r=1.0; g=0.8; b=0.0; } 
 
       const coreMix = entropy * 2.0; 
       TEMP_COLOR.setRGB(r * coreMix, g * coreMix, b * coreMix); 
       
-      if (speed < 0.008 && !effectiveChaos && (isTarget || isRecalling) && started) {
-          const flash = 1.0 - (speed / 0.008); 
-          TEMP_COLOR.lerp(WHITE, flash * 0.8);
+      if (teacherFeedback === 1) TEMP_COLOR.lerp(GREEN, 0.4);
+      else if (teacherFeedback === -1) TEMP_COLOR.lerp(RED, 0.4);
+
+      if (activation[i] > 0.5) {
+          TEMP_COLOR.lerp(WHITE, activation[i]);
       }
       meshRef.current.setColorAt(i, TEMP_COLOR);
 
@@ -509,9 +639,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const glowIntensity = 2.5 + entropy * 4.0; 
       TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
       
-      if (speed < 0.008 && !effectiveChaos && (isTarget || isRecalling) && started) {
-          const flash = 1.0 - (speed / 0.008);
-          TEMP_EMISSIVE.lerp(WHITE, flash);
+      if (activation[i] > 0.5) {
+          TEMP_EMISSIVE.lerp(WHITE, activation[i]);
       }
 
       if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
@@ -520,8 +649,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     if (statsRef.current) {
         statsRef.current.meanError = activeTargetCount > 0 ? totalError / activeTargetCount : 0;
         statsRef.current.meanSpeed = totalSpeed / count;
-        statsRef.current.energy = totalKineticEnergy; // Update Energy Metric
+        statsRef.current.energy = totalKineticEnergy; 
         statsRef.current.fps = 1 / delta;
+        statsRef.current.temperature = systemTemperature; 
     }
     
     meshRef.current.instanceMatrix.needsUpdate = true;
@@ -544,7 +674,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       </InstancedMesh>
 
       <InstancedMesh ref={outlineRef} args={[undefined, undefined, params.particleCount]}>
-        <SphereGeometry args={[0.42, 12, 12]} />
+        <SphereGeometry args={[0.42, 8, 8]} />
         <MeshBasicMaterial 
             color="#ffffff" 
             transparent 
@@ -557,11 +687,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       </InstancedMesh>
 
       <InstancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
-        <SphereGeometry args={[0.22, 16, 16]} /> 
-        <MeshStandardMaterial 
+        <SphereGeometry args={[0.22, 10, 10]} /> 
+        <MeshPhongMaterial 
             color="#050505" 
-            roughness={0.2} 
-            metalness={0.9} 
+            specular="#999999"
+            shininess={30}
             emissive="#000000"
             toneMapped={false}
         /> 
@@ -580,16 +710,16 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 
     return (
         <group>
-            {/* Region A (Cyan) */}
-            <Cylinder args={[18, 18, 10, 6]} position={[-20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.15} />
+            {/* Region A (Cyan) Left */}
+            <Cylinder args={[15, 15, 10, 6]} position={[-35, 0, 0]} rotation={[0, 0, Math.PI/2]}>
+                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.25} />
             </Cylinder>
-            {/* Region B (Pink) */}
-            <Cylinder args={[18, 18, 10, 6]} position={[20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.15} />
+            {/* Region B (Pink) Right */}
+            <Cylinder args={[15, 15, 10, 6]} position={[35, 0, 0]} rotation={[0, 0, Math.PI/2]}>
+                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.25} />
             </Cylinder>
-            {/* Region Associative (Gold) */}
-            <Cylinder args={[15, 15, 20, 8]} position={[0, 0, 0]}>
+            {/* Region Associative (Gold) Center */}
+            <Cylinder args={[12, 12, 30, 8]} position={[0, 0, 0]} rotation={[0, 0, Math.PI/2]}>
                 <meshBasicMaterial color="#FFAA00" wireframe transparent opacity={0.15} />
             </Cylinder>
         </group>
@@ -609,7 +739,7 @@ const MatrixHUD: React.FC<{
         if (!ctx) return;
         
         const updateInterval = setInterval(() => {
-            const size = canvasRef.current!.width;
+            const size = canvasRef.current?.width || 120;
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, size, size);
 
@@ -673,71 +803,57 @@ const MatrixHUD: React.FC<{
     );
 };
 
-// --- Stress Report Modal ---
-interface TestResult {
-    pattern: string;
-    finalError: number;
-    convergenceSpeed: number;
-}
-
-const StressReportModal: React.FC<{ 
-    results: TestResult[], 
-    onClose: () => void 
-}> = ({ results, onClose }) => {
-    const avgError = results.reduce((acc, curr) => acc + curr.finalError, 0) / results.length;
-    const capacityScore = Math.max(0, 100 - (avgError * 5)); // Arbitrary score calculation
-    
+// --- Active Inference Control Panel ---
+const InferenceControlPanel: React.FC<{ 
+    setFeedback: (val: number) => void,
+    feedback: number
+}> = ({ setFeedback, feedback }) => {
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
-            <div className="bg-black border-2 border-purple-500 w-full max-w-2xl p-8 relative shadow-[0_0_50px_rgba(168,85,247,0.4)] flex flex-col max-h-[90vh]">
-                <h2 className="text-3xl font-black text-purple-400 mb-6 tracking-tighter border-b border-purple-900 pb-4">
-                    MEMORY CAPACITY REPORT
-                </h2>
+        <div className="absolute top-1/2 left-6 -translate-y-1/2 flex flex-col gap-4 pointer-events-auto z-50">
+             <div className="text-[10px] text-yellow-400 font-bold uppercase tracking-widest mb-[-10px] ml-1">Thermodynamic Controls</div>
+             <div className="flex flex-col gap-2 p-2 bg-black/80 border border-yellow-800 rounded backdrop-blur-md w-24">
                 
-                <div className="grid grid-cols-2 gap-8 mb-8 shrink-0">
-                    <div>
-                        <div className="text-xs text-purple-300 uppercase tracking-widest mb-1">Overall Capacity Score</div>
-                        <div className="text-5xl font-bold text-white">{capacityScore.toFixed(1)}/100</div>
-                    </div>
-                    <div>
-                        <div className="text-xs text-purple-300 uppercase tracking-widest mb-1">Patterns Stored</div>
-                        <div className="text-5xl font-bold text-white">{results.length}</div>
-                    </div>
-                </div>
-
-                <div className="mb-8 flex-1 overflow-hidden flex flex-col min-h-0 border border-purple-900/30">
-                    <div className="bg-purple-900/20 px-4 py-2 border-b border-purple-800 shrink-0 grid grid-cols-3 text-sm text-purple-400 font-bold">
-                        <div>PATTERN</div>
-                        <div>RECALL ERROR</div>
-                        <div>STATUS</div>
-                    </div>
-                    <div className="overflow-y-auto scrollbar-thin scrollbar-thumb-purple-500 scrollbar-track-black p-4">
-                        <table className="w-full text-sm text-left">
-                             <tbody className="font-mono text-gray-300">
-                                {results.map((r, i) => (
-                                    <tr key={i} className="border-b border-purple-900/20 last:border-0 hover:bg-purple-900/10">
-                                        <td className="py-2 w-1/3">{r.pattern}</td>
-                                        <td className="py-2 w-1/3">{r.finalError.toFixed(2)}</td>
-                                        <td className="py-2 w-1/3">
-                                            <span className={r.finalError < 2.0 ? "text-green-400" : "text-red-400"}>
-                                                {r.finalError < 2.0 ? "INTACT" : "DEGRADED"}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <button onClick={onClose} className="w-full py-4 bg-purple-900 hover:bg-purple-700 text-white font-bold tracking-widest border border-purple-500 transition-all shrink-0">
-                    ACKNOWLEDGE REPORT
+                <button 
+                    onMouseDown={() => setFeedback(1)} 
+                    onMouseUp={() => setFeedback(0)}
+                    onMouseLeave={() => setFeedback(0)}
+                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest ${
+                        feedback === 1 
+                        ? 'border-green-400 bg-green-500/20 text-green-400 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-95' 
+                        : 'border-green-900/50 text-green-800 hover:border-green-500/50 hover:text-green-500'
+                    }`}
+                >
+                    <span className="text-xl mb-1">❄️</span>
+                    <span>FREEZE</span>
                 </button>
-            </div>
+                
+                <div className="h-px bg-gray-800 w-full"></div>
+                
+                <button 
+                    onMouseDown={() => setFeedback(-1)} 
+                    onMouseUp={() => setFeedback(0)}
+                    onMouseLeave={() => setFeedback(0)}
+                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest ${
+                        feedback === -1 
+                        ? 'border-red-400 bg-red-500/20 text-red-400 shadow-[0_0_20px_rgba(239,68,68,0.5)] scale-95' 
+                        : 'border-red-900/50 text-red-800 hover:border-red-500/50 hover:text-red-500'
+                    }`}
+                >
+                    <span className="text-xl mb-1">🔥</span>
+                    <span>AGITATE</span>
+                </button>
+             </div>
+             
+             {/* Temperature Gauge */}
+             <div className="h-32 w-4 bg-gray-900 border border-gray-800 relative ml-10">
+                 <div 
+                    className={`absolute bottom-0 w-full transition-all duration-300 ${feedback === -1 ? 'bg-red-500 h-full' : (feedback === 1 ? 'bg-green-500 h-[5%]' : 'bg-cyan-500 h-[20%]')}`}
+                 ></div>
+                 <div className="absolute -left-6 bottom-0 text-[9px] text-gray-500 rotate-[-90deg] origin-bottom-right translate-x-full mb-1">TEMP</div>
+             </div>
         </div>
-    );
-};
-
+    )
+}
 
 // --- UI Overlay ---
 
@@ -745,7 +861,7 @@ interface UIOverlayProps {
   params: SimulationParams;
   setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
   dataRef: React.MutableRefObject<ParticleData>;
-  simulationMode: 'standard' | 'stress';
+  simulationMode: 'standard' | 'temporal' | 'inference';
   statsRef: React.MutableRefObject<SystemStats>;
   onTestComplete: (results: TestResult[]) => void;
 }
@@ -755,21 +871,15 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
   const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'entropy' | 'observation' | 'encoding' | 'amnesia' | 'recall'>('idle');
   const [testLogs, setTestLogs] = useState<string[]>([]);
 
+  // Temporal Demo State
+  const [temporalState, setTemporalState] = useState<'idle' | 'training' | 'ready'>('idle');
+
   const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
     setParams(prev => ({ ...prev, [key]: value }));
   };
 
   const togglePause = () => handleChange('paused', !params.paused);
   
-  const togglePlasticity = (active: boolean) => {
-      if (active) setParams(prev => ({ 
-          ...prev, 
-          plasticity: 0.1, 
-          dataGravity: Math.max(prev.dataGravity, 0.5) 
-      }));
-      else setParams(prev => ({ ...prev, plasticity: 0 }));
-  };
-
   const handleMemoryAction = (type: 'save' | 'load', slot: number) => {
     setParams(prev => ({ ...prev, memoryAction: { type, slot, triggerId: prev.memoryAction.triggerId + 1 } }));
   };
@@ -778,103 +888,63 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
       setTestLogs(prev => [...prev.slice(-4), `> ${msg}`]);
   };
 
-  // --- AUTOMATED STRESS TEST SEQUENCE (UPDATED 25-SLOT) ---
+  // --- EXPERIMENT A: ACTIVE INFERENCE (THERMODYNAMICS) ---
   useEffect(() => {
-    if (simulationMode !== 'stress') return;
-
-    let timeoutIds: ReturnType<typeof setTimeout>[] = [];
-    const schedule = (fn: () => void, delay: number) => {
-        timeoutIds.push(setTimeout(fn, delay));
-    };
-
-    // 25 Patterns (NATO Phonetic)
-    const patterns = [
-        "ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", 
-        "FOXTROT", "GOLF", "HOTEL", "INDIA", "JULIETT", 
-        "KILO", "LIMA", "MIKE", "NOVEMBER", "OSCAR", 
-        "PAPA", "QUEBEC", "ROMEO", "SIERRA", "TANGO", 
-        "UNIFORM", "VICTOR", "WHISKEY", "XRAY", "YANKEE"
-    ];
-
-    const results: TestResult[] = [];
-
-    // T+0: Initialization
-    setTestLogs(["> INIT STRESS PROTOCOL: 25 SLOTS (HIGH DENSITY)"]);
-    handleMemoryAction('load', -2); // Clear bank
-    setParams(p => ({ ...DEFAULT_PARAMS, chaosMode: false, showRegions: true, particleCount: p.particleCount }));
-
-    let timeCursor = 1000;
-    const learnTime = 3000; // Fast Learning
-    const saveTime = 200;   // Instant Save
-    
-    // --- PHASE 1: ENCODING ---
-    patterns.forEach((pat, index) => {
-        // Learn
-        schedule(() => {
-            addLog(`ENCODING [${index + 1}/25]: '${pat}'`);
-            setParams(p => ({ ...p, inputText: pat, plasticity: 0.2, dataGravity: 0.5 }));
-        }, timeCursor);
-        timeCursor += learnTime;
-
-        // Save
-        schedule(() => {
-            handleMemoryAction('save', index + 1);
-        }, timeCursor);
-        timeCursor += saveTime;
-    });
-
-    // --- PHASE 2: RECALL & VERIFICATION ---
-    schedule(() => {
-        addLog("PHASE 2: VERIFICATION & RECALL");
-        setParams(p => ({ ...p, inputText: "", plasticity: 0 })); // Stop external drive
-    }, timeCursor);
-    timeCursor += 1000;
-
-    const recallTime = 2000; // Fast Recall
-
-    patterns.forEach((pat, index) => {
-        // Load
-        schedule(() => {
-            addLog(`RECALLING SLOT ${index + 1} ('${pat}')...`);
-            handleMemoryAction('load', index + 1);
-        }, timeCursor);
-        timeCursor += recallTime;
-
-        // Measure
-        schedule(() => {
-            const error = statsRef.current.meanError;
-            results.push({
-                pattern: pat,
-                finalError: error,
-                convergenceSpeed: statsRef.current.meanSpeed
-            });
-            // Only log errors to keep console clean
-            if (error > 2.0) addLog(`WARNING: SLOT ${index+1} DEGRADED`);
-        }, timeCursor);
-        timeCursor += 200;
-    });
-
-    // --- PHASE 3: CROSSTALK ---
-    schedule(() => {
-        addLog("PHASE 3: TOTAL CROSSTALK SUPERPOSITION");
-        handleMemoryAction('load', -1);
-    }, timeCursor);
-    timeCursor += 5000;
-
-    // --- FINISH ---
-    schedule(() => {
-        addLog("TEST COMPLETE. GENERATING REPORT...");
-        onTestComplete(results);
-    }, timeCursor);
-
-
-    return () => timeoutIds.forEach(clearTimeout);
+      if (simulationMode === 'inference') {
+          // Initialize with "ORDER" but add hidden noise
+          setParams(prev => ({ ...prev, showRegions: true, inputText: "ORDER", targetRegion: 0 }));
+          addLog("SYSTEM INITIALIZED. PATTERN: 'ORDER'");
+          addLog("USE AGITATE (HEAT) TO BREAK LOCAL MINIMA.");
+      }
   }, [simulationMode]);
 
+  // --- EXPERIMENT B: TEMPORAL PREDICTION ---
+  const runTemporalTraining = () => {
+      setTemporalState('training');
+      addLog("TRAINING: IMPRINTING A -> B...");
+      
+      let cursor = 0;
+      // Flash Sequence 3 times
+      for(let i=0; i<3; i++) {
+          setTimeout(() => setParams(p => ({ ...p, inputText: "TICK", targetRegion: 0, plasticity: 0.2 })), cursor);
+          cursor += 1000;
+          setTimeout(() => setParams(p => ({ ...p, inputText: "TOCK", targetRegion: 1, plasticity: 0.2 })), cursor);
+          cursor += 1000;
+      }
+
+      setTimeout(() => {
+          setParams(p => ({ ...p, inputText: "", plasticity: 0 }));
+          setTemporalState('ready');
+          addLog("TRAINING COMPLETE. READY FOR PREDICTION.");
+      }, cursor);
+  };
+
+  const triggerTemporalCue = () => {
+      addLog("CUE: TRIGGERING 'TICK'...");
+      setParams(p => ({ ...p, inputText: "TICK", targetRegion: 0 }));
+      
+      // Cut input quickly to show ghost
+      setTimeout(() => {
+          setParams(p => ({ ...p, inputText: "" }));
+          addLog("OBSERVE: 'TOCK' GHOST IN REGION B");
+      }, 600);
+  };
+
+  // Standard Mode Step logic (omitted changes for brevity, kept same)
+  // ...
+
+  const togglePlasticity = (active: boolean) => {
+    if (active) setParams(prev => ({ 
+        ...prev, 
+        plasticity: 0.1, 
+        dataGravity: Math.max(prev.dataGravity, 0.5) 
+    }));
+    else setParams(prev => ({ ...prev, plasticity: 0 }));
+  };
 
   // Step-by-Step Experiment Controller (Standard Mode Only)
   useEffect(() => {
-    if (simulationMode === 'stress') return; // Disable in stress mode
+    if (simulationMode !== 'standard') return; 
     if (autoRunPhase === 'idle') return;
 
     if (autoRunPhase === 'reset') {
@@ -958,19 +1028,50 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
         {/* CONTROLLER PANEL */}
         <div className="space-y-3 pt-2">
             <div className="bg-cyan-950/30 border border-cyan-500/20 p-3 text-center relative">
-                {simulationMode === 'stress' ? (
+                {simulationMode === 'inference' ? (
                      <div className="text-left">
-                        <div className="flex items-center gap-2 mb-2 border-b border-purple-800 pb-2">
-                            <div className="w-2 h-2 bg-purple-500 animate-pulse"></div>
-                            <span className="text-xs text-purple-300 font-bold tracking-widest">MODE: STRESS TEST (25-SLOT)</span>
+                        <div className="flex items-center gap-2 mb-2 border-b border-yellow-800 pb-2">
+                            <div className="w-2 h-2 bg-yellow-500 animate-pulse"></div>
+                            <span className="text-xs text-yellow-300 font-bold tracking-widest">EXP A: ACTIVE INFERENCE</span>
+                        </div>
+                        <div className="text-[10px] text-yellow-200 font-mono opacity-80 mb-2 leading-relaxed">
+                            <span className="text-white font-bold">GOAL:</span> Use Thermodynamic controls (Left) to stabilize the pattern "ORDER".
+                            <br/><br/>
+                            1. AGITATE to break false shapes.
+                            <br/>
+                            2. FREEZE when structure emerges.
+                        </div>
+                    </div>
+                ) : simulationMode === 'temporal' ? (
+                     <div className="text-left">
+                        <div className="flex items-center gap-2 mb-2 border-b border-green-800 pb-2">
+                            <div className="w-2 h-2 bg-green-500 animate-pulse"></div>
+                            <span className="text-xs text-green-300 font-bold tracking-widest">EXP B: CAUSAL PREDICTION</span>
                         </div>
                         
+                        <div className="flex flex-col gap-2 mt-2">
+                            <button 
+                                onClick={runTemporalTraining} 
+                                disabled={temporalState === 'training'}
+                                className={`w-full py-2 bg-green-900/40 border border-green-500/50 text-green-300 font-bold text-xs tracking-widest hover:bg-green-800/60 ${temporalState === 'training' ? 'opacity-50 cursor-wait' : ''}`}
+                            >
+                                {temporalState === 'training' ? 'TRAINING...' : '1. IMPRINT: TICK -> TOCK'}
+                            </button>
+
+                            <button 
+                                onClick={triggerTemporalCue} 
+                                disabled={temporalState !== 'ready'}
+                                className={`w-full py-2 bg-white/10 border border-white/30 text-white font-bold text-xs tracking-widest hover:bg-white/20 ${temporalState !== 'ready' ? 'opacity-30' : ''}`}
+                            >
+                                2. TRIGGER: "TICK" ONLY
+                            </button>
+                        </div>
+
                         {/* Real-time Feedback Console */}
-                        <div className="text-[10px] text-purple-200 font-mono bg-black/80 p-2 border border-purple-500/30 min-h-[80px] flex flex-col justify-end">
+                        <div className="text-[10px] text-green-200 font-mono bg-black/80 p-2 border border-green-500/30 min-h-[60px] flex flex-col justify-end mt-2">
                             {testLogs.map((log, i) => (
                                 <div key={i} className="opacity-80">{log}</div>
                             ))}
-                            <div className="w-2 h-4 bg-purple-500 animate-pulse inline-block mt-1"></div>
                         </div>
                     </div>
                 ) : (
@@ -1032,7 +1133,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
 // --- Status Bar ---
 
 const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats> }> = ({ params, statsRef }) => {
-  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0 });
+  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0 });
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1041,7 +1142,8 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
                 meanError: statsRef.current.meanError,
                 meanSpeed: statsRef.current.meanSpeed,
                 energy: statsRef.current.energy,
-                fps: statsRef.current.fps
+                fps: statsRef.current.fps,
+                temperature: statsRef.current.temperature
             });
         }
     }, 200); 
@@ -1057,18 +1159,16 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
             </span>
         </div>
         <div className="flex items-center gap-2">
-            <span className="opacity-50">CONVERGENCE:</span>
-            <span>{Math.round(Math.max(0, (1 - stats.meanSpeed * 5) * 100))}%</span>
-        </div>
-        <div className="flex items-center gap-2">
              <span className="opacity-50">ENERGY (Ek):</span>
              <span className={stats.energy > 5 ? "text-orange-400 animate-pulse" : "text-cyan-200"}>
                  {stats.energy.toFixed(2)}
              </span>
         </div>
         <div className="flex items-center gap-2">
-            <span className="opacity-50">ENTROPY:</span>
-            <span>{params.chaosMode ? 'MAX' : 'NOMINAL'}</span>
+            <span className="opacity-50">TEMP (T):</span>
+            <span className={stats.temperature > 0.8 ? "text-red-500 font-bold" : (stats.temperature < 0.1 ? "text-green-400" : "text-cyan-200")}>
+                {stats.temperature.toFixed(2)}
+            </span>
         </div>
         <div className="flex-1"></div>
         <div className="flex items-center gap-2">
@@ -1081,10 +1181,14 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
 
 // --- Title Screen ---
 
-const TitleScreen: React.FC<{ onStartStandard: () => void, onStartStress: () => void }> = ({ onStartStandard, onStartStress }) => {
+const TitleScreen: React.FC<{ 
+    onStartStandard: () => void, 
+    onStartTemporal: () => void, 
+    onStartInference: () => void 
+}> = ({ onStartStandard, onStartTemporal, onStartInference }) => {
     return (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-            <div className="max-w-3xl w-full p-12 border-l-4 border-cyan-500 bg-black/90 relative overflow-hidden">
+            <div className="max-w-4xl w-full p-12 border-l-4 border-cyan-500 bg-black/90 relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-30 text-[10px] text-cyan-500 font-mono text-right">
                     REF: L-GROUP-PCN-2025<br/>
                     VAR_FREE_ENERGY_MIN
@@ -1096,19 +1200,66 @@ const TitleScreen: React.FC<{ onStartStandard: () => void, onStartStress: () => 
                 <h2 className="text-xl text-cyan-600 font-bold tracking-[0.5em] mb-8 uppercase">L-Group Simulation Environment</h2>
                 
                 <div className="mb-8 text-gray-300 font-mono text-sm leading-relaxed border-t border-b border-gray-800 py-6">
-                    <strong className="text-white block mb-2">ABSTRACT</strong>
-                    This experiment demonstrates the emergence of auto-associative memory through thermodynamic annealing. By minimizing the Variational Free Energy (F = Ep + Ek), the system transitions from entropic chaos to ordered semantic states. Phase 3 (Encoding) utilizes Hebbian-modulated structural plasticity to encode sensory data into the manifold, demonstrating proof of convergence to local minima as predicted by the L-Group framework.
+                    <strong className="text-white block mb-2">SPRINT 1: ACTIVE INFERENCE</strong>
+                    We have evolved the system from passive storage to active learning. Select a module below:
                 </div>
                 
-                <div className="flex gap-4">
-                    <button onClick={onStartStandard} className="flex-1 py-4 bg-cyan-600 hover:bg-cyan-500 text-black font-bold text-lg tracking-widest clip-corner transition-all shadow-[0_0_30px_rgba(6,182,212,0.4)] hover:shadow-[0_0_50px_rgba(6,182,212,0.6)]">
-                        INITIALIZE SIMULATION
+                <div className="grid grid-cols-3 gap-4">
+                    <button onClick={onStartStandard} className="py-6 bg-cyan-900/30 border border-cyan-600/50 hover:bg-cyan-600 hover:text-black hover:border-cyan-400 text-cyan-100 font-bold text-sm tracking-widest clip-corner transition-all">
+                        STANDARD SIMULATION
                     </button>
                     
-                    <button onClick={onStartStress} className="flex-1 py-4 bg-purple-900/50 hover:bg-purple-700/80 text-purple-200 border border-purple-500 font-bold text-lg tracking-widest clip-corner transition-all shadow-[0_0_20px_rgba(168,85,247,0.2)]">
-                        STRESS TEST (CAPACITY)
+                    <button onClick={onStartInference} className="py-6 bg-yellow-900/30 border border-yellow-600/50 hover:bg-yellow-600 hover:text-black hover:border-yellow-400 text-yellow-100 font-bold text-sm tracking-widest clip-corner transition-all relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-yellow-500/10 translate-y-full group-hover:translate-y-0 transition-transform"></div>
+                        <span className="relative z-10">EXP A: ACTIVE INFERENCE</span>
+                        <div className="text-[9px] font-normal opacity-60 mt-1 relative z-10">THERMODYNAMIC AGENCY</div>
+                    </button>
+
+                    <button onClick={onStartTemporal} className="py-6 bg-green-900/30 border border-green-600/50 hover:bg-green-600 hover:text-black hover:border-green-400 text-green-100 font-bold text-sm tracking-widest clip-corner transition-all relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-green-500/10 translate-y-full group-hover:translate-y-0 transition-transform"></div>
+                        <span className="relative z-10">EXP B: CAUSAL PREDICTION</span>
+                        <div className="text-[9px] font-normal opacity-60 mt-1 relative z-10">HEBBIAN TIME (A -&gt; B)</div>
                     </button>
                 </div>
+            </div>
+        </div>
+    );
+};
+
+interface StressReportModalProps {
+    results: TestResult[];
+    onClose: () => void;
+}
+
+const StressReportModal: React.FC<StressReportModalProps> = ({ results, onClose }) => {
+    return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-md p-6">
+            <div className="max-w-2xl w-full bg-black border border-cyan-500/50 p-8 shadow-[0_0_50px_rgba(6,182,212,0.2)] relative">
+                <button onClick={onClose} className="absolute top-4 right-4 text-cyan-700 hover:text-cyan-400">CLOSE [X]</button>
+                <h2 className="text-3xl font-bold text-cyan-400 mb-6 tracking-widest border-b border-cyan-900 pb-4">DIAGNOSTIC REPORT</h2>
+                
+                <div className="space-y-4 mb-8">
+                    {results.map((res, i) => (
+                        <div key={i} className="flex justify-between items-center border-b border-gray-800 pb-2">
+                            <div>
+                                <div className="text-cyan-200 font-bold uppercase tracking-wider">{res.testName}</div>
+                                <div className="text-xs text-gray-500 font-mono">{res.details}</div>
+                            </div>
+                            <div className="text-right">
+                                <div className={`text-xl font-mono font-bold ${res.status === 'PASS' ? 'text-green-500' : 'text-red-500'}`}>
+                                    {res.status}
+                                </div>
+                                <div className="text-xs text-gray-600">
+                                    {res.score.toFixed(2)} / {res.maxScore}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                
+                <button onClick={onClose} className="w-full py-3 bg-cyan-900/30 hover:bg-cyan-700/50 text-cyan-400 font-bold tracking-widest border border-cyan-600/30 transition-all">
+                    ACKNOWLEDGE
+                </button>
             </div>
         </div>
     );
@@ -1121,14 +1272,16 @@ const SimulationCanvas: React.FC<{
     dataRef: React.MutableRefObject<ParticleData>, 
     statsRef: React.MutableRefObject<SystemStats>, 
     started: boolean,
-    spatialRefs: React.MutableRefObject<{ neighborList: Int32Array; neighborCounts: Int32Array; gridHead: Int32Array; gridNext: Int32Array; frameCounter: number; }>
-}> = ({ params, dataRef, statsRef, started, spatialRefs }) => {
+    spatialRefs: React.MutableRefObject<{ neighborList: Int32Array; neighborCounts: Int32Array; gridHead: Int32Array; gridNext: Int32Array; frameCounter: number; }>,
+    teacherFeedback: number
+}> = ({ params, dataRef, statsRef, started, spatialRefs, teacherFeedback }) => {
+  const controlsRef = useRef<any>(null); // Ref to access OrbitControls target
+
   return (
     <Canvas camera={{ position: [0, 0, 35], fov: 45 }} gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
         <color attach="background" args={['#020205']} />
         
-        {/* Volumetric Atmosphere */}
-        <fog attach="fog" args={['#020205', 10, 80]} />
+        {/* OPTIMIZATION: Removed fog for better performance and clarity */}
         <ambientLight intensity={0.2} />
         
         <pointLight position={[20, 20, 20]} intensity={2} color="#00ffff" distance={100} decay={2} />
@@ -1137,7 +1290,7 @@ const SimulationCanvas: React.FC<{
         <Stars radius={150} depth={50} count={3000} factor={4} saturation={1} fade speed={2} />
         <Grid position={[0, -15, 0]} args={[100, 100]} cellSize={4} sectionSize={20} sectionColor="#06b6d4" cellColor="#1e293b" fadeDistance={60} />
 
-        <ParticleSystem params={params} dataRef={dataRef} statsRef={statsRef} started={started} spatialRefs={spatialRefs} />
+        <ParticleSystem params={params} dataRef={dataRef} statsRef={statsRef} started={started} spatialRefs={spatialRefs} teacherFeedback={teacherFeedback} />
         <RegionGuides params={params} />
         
         <EffectComposer enableNormalPass={false}>
@@ -1147,18 +1300,31 @@ const SimulationCanvas: React.FC<{
             <Vignette eskil={false} offset={0.1} darkness={1.1} />
         </EffectComposer>
 
-        <OrbitControls autoRotate={!started} autoRotateSpeed={0.5} maxPolarAngle={Math.PI / 1.5} minPolarAngle={Math.PI / 4} />
+        {/* Using standard OrbitControls but disabling rotation when using camera rig might be cleaner, 
+            but combining them allows mouse orbit + WASD move which is standard editor behavior */}
+        <OrbitControls 
+            ref={controlsRef}
+            makeDefault 
+            autoRotate={!started} 
+            autoRotateSpeed={0.5} 
+            maxPolarAngle={Math.PI / 1.5} 
+            minPolarAngle={Math.PI / 4} 
+            enableDamping={true}
+            dampingFactor={0.1}
+        />
+        <KeyboardCameraRig controlsRef={controlsRef} />
     </Canvas>
   );
 };
 
 function App() {
-  // null = title screen, 'standard' = normal, 'stress' = automated stress test
-  const [simulationMode, setSimulationMode] = useState<'standard' | 'stress' | null>(null);
+  // null = title screen, 'standard' = normal, 'temporal' = sequence, 'inference' = manual teacher
+  const [simulationMode, setSimulationMode] = useState<'standard' | 'temporal' | 'inference' | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
+  const [teacherFeedback, setTeacherFeedback] = useState<number>(0); // -1 = Punish, 0 = Neutral, 1 = Reward
   
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
-  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0 });
+  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0 });
   
   // Hoist spatial refs to share with HUD
   const spatialRefs = useRef({
@@ -1196,12 +1362,20 @@ function App() {
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans select-none">
-      <SimulationCanvas params={params} dataRef={dataRef} statsRef={statsRef} started={simulationMode !== null} spatialRefs={spatialRefs} />
+      <SimulationCanvas 
+            params={params} 
+            dataRef={dataRef} 
+            statsRef={statsRef} 
+            started={simulationMode !== null} 
+            spatialRefs={spatialRefs} 
+            teacherFeedback={teacherFeedback}
+      />
       
       {simulationMode === null && (
           <TitleScreen 
             onStartStandard={() => setSimulationMode('standard')} 
-            onStartStress={() => setSimulationMode('stress')} 
+            onStartTemporal={() => setSimulationMode('temporal')} 
+            onStartInference={() => setSimulationMode('inference')}
           />
       )}
       
@@ -1215,6 +1389,9 @@ function App() {
                 statsRef={statsRef}
                 onTestComplete={handleTestComplete}
             />
+            {simulationMode === 'inference' && (
+                <InferenceControlPanel setFeedback={setTeacherFeedback} feedback={teacherFeedback} />
+            )}
             <StatusBar params={params} statsRef={statsRef} />
             <MatrixHUD spatialRefs={spatialRefs} particleCount={params.particleCount} />
             <div className="absolute top-6 left-6 pointer-events-none hidden md:block mix-blend-screen">
