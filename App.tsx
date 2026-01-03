@@ -6,6 +6,7 @@ import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult } from './types';
+import { EXPERIMENT_INFO } from './Info';
 
 // --- ParticleSystem ---
 // Workaround for missing JSX types in current environment
@@ -673,7 +674,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         statsRef.current.energy = totalKineticEnergy; 
         statsRef.current.fps = 1 / delta;
         statsRef.current.temperature = systemTemperature; 
-        statsRef.current.isStable = totalKineticEnergy < 15.0 && totalError < (activeTargetCount * 0.05);
+        // RELAXED STABILITY CHECK:
+        // Consider stable if low error OR very low energy (settled in local minima)
+        statsRef.current.isStable = (totalKineticEnergy < 2.0 && totalError < (activeTargetCount * 0.1)) || totalKineticEnergy < 0.05;
         statsRef.current.trainingProgress = totalSynapticWeight;
     }
     
@@ -867,6 +870,14 @@ const InferenceControlPanel: React.FC<{
 }
 
 // --- Temporal Training Controller (State Machine) ---
+interface TelemetryFrame {
+    time: number;
+    phase: string;
+    energy: number;
+    error: number;
+    synapticWeight: number;
+}
+
 interface TemporalControllerProps {
     enabled: boolean;
     state: 'idle' | 'training' | 'ready';
@@ -874,9 +885,10 @@ interface TemporalControllerProps {
     setParams: React.Dispatch<React.SetStateAction<SimulationParams>>;
     statsRef: React.MutableRefObject<SystemStats>;
     addLog: (s: string) => void;
+    telemetryRef: React.MutableRefObject<TelemetryFrame[]>;
 }
 
-const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled, state, setState, setParams, statsRef, addLog }) => {
+const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled, state, setState, setParams, statsRef, addLog, telemetryRef }) => {
     const trainingStage = useRef(0);
     const stepTimer = useRef(0);
     const waitingForStable = useRef(false);
@@ -886,14 +898,26 @@ const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled
             trainingStage.current = 0;
             return;
         }
+        
+        // Reset telemetry on start
+        telemetryRef.current = [];
 
         const interval = setInterval(() => {
             if (!statsRef.current) return;
-            const { isStable } = statsRef.current;
+            const { isStable, energy, meanError, trainingProgress } = statsRef.current;
             stepTimer.current += 100;
-
+            
             const cycle = Math.floor(trainingStage.current / 2);
-            const phase = trainingStage.current % 2; // 0 = TICK, 1 = TOCK
+            const phaseType = trainingStage.current % 2 === 0 ? "TICK" : "TOCK";
+
+            // RECORD TELEMETRY
+            telemetryRef.current.push({
+                time: Date.now(),
+                phase: phaseType,
+                energy: energy,
+                error: meanError,
+                synapticWeight: trainingProgress
+            });
 
             if (cycle >= 3) {
                  // FINISHED
@@ -917,6 +941,7 @@ const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled
 
             if (!waitingForStable.current) {
                 // START NEW PHASE
+                const phase = trainingStage.current % 2; 
                 if (phase === 0) {
                      // TICK PHASE
                      addLog(`CYCLE ${cycle + 1}: IMPRINTING 'TICK' (A)...`);
@@ -939,6 +964,62 @@ const TemporalTrainingController: React.FC<TemporalControllerProps> = ({ enabled
     return null;
 };
 
+// --- Info Modal ---
+const InfoModal: React.FC<{ 
+    mode: string, 
+    onClose: () => void 
+}> = ({ mode, onClose }) => {
+    const info = EXPERIMENT_INFO[mode] || EXPERIMENT_INFO['standard'];
+
+    return (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-md p-6">
+            <div className="max-w-xl w-full bg-black/90 border border-cyan-500/50 p-6 shadow-[0_0_50px_rgba(6,182,212,0.2)] relative overflow-hidden">
+                {/* Decorative Elements */}
+                <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-cyan-500"></div>
+                <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-cyan-500"></div>
+                <div className="scanlines opacity-20"></div>
+
+                <div className="relative z-10">
+                    <div className="flex justify-between items-start mb-4 border-b border-gray-800 pb-2">
+                        <h2 className="text-2xl font-bold text-cyan-400 tracking-widest uppercase">{info.title}</h2>
+                        <button onClick={onClose} className="text-cyan-700 hover:text-cyan-300 font-bold">[ CLOSE ]</button>
+                    </div>
+
+                    <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                        <div>
+                            <h3 className="text-xs text-gray-500 font-bold uppercase tracking-wider mb-1">Summary</h3>
+                            <p className="text-sm text-gray-300 leading-relaxed">{info.summary}</p>
+                        </div>
+
+                        <div>
+                            <h3 className="text-xs text-green-700 font-bold uppercase tracking-wider mb-1">Why It Matters</h3>
+                            <p className="text-sm text-gray-400 italic border-l-2 border-green-900/50 pl-3">{info.importance}</p>
+                        </div>
+
+                        <div>
+                            <h3 className="text-xs text-yellow-700 font-bold uppercase tracking-wider mb-1">Demonstration</h3>
+                            <p className="text-sm text-gray-300">{info.demonstration}</p>
+                        </div>
+
+                        <div className="bg-cyan-950/20 p-3 border border-cyan-900/30">
+                            <h3 className="text-xs text-cyan-600 font-bold uppercase tracking-wider mb-2">Instructions</h3>
+                            <ol className="list-decimal list-inside space-y-2">
+                                {info.steps.map((step, i) => (
+                                    <li key={i} className="text-xs text-cyan-100 font-mono">{step}</li>
+                                ))}
+                            </ol>
+                        </div>
+                    </div>
+
+                    <button onClick={onClose} className="w-full mt-6 py-3 bg-cyan-900/30 hover:bg-cyan-700/50 text-cyan-400 font-bold tracking-widest border border-cyan-600/30 transition-all text-xs">
+                        RESUME SIMULATION
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- UI Overlay ---
 
 interface UIOverlayProps {
@@ -948,10 +1029,11 @@ interface UIOverlayProps {
   simulationMode: 'standard' | 'temporal' | 'inference' | 'paper';
   statsRef: React.MutableRefObject<SystemStats>;
   onTestComplete: (results: TestResult[]) => void;
+  telemetryRef: React.MutableRefObject<TelemetryFrame[]>;
+  onShowInfo: () => void;
 }
 
-const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simulationMode, statsRef, onTestComplete }) => {
-  const [showHelp, setShowHelp] = useState(false);
+const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simulationMode, statsRef, onTestComplete, telemetryRef, onShowInfo }) => {
   const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'entropy' | 'observation' | 'encoding' | 'amnesia' | 'recall'>('idle');
   const [testLogs, setTestLogs] = useState<string[]>([]);
   const [temporalState, setTemporalState] = useState<'idle' | 'training' | 'ready'>('idle');
@@ -968,6 +1050,19 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
 
   const addLog = (msg: string) => {
       setTestLogs(prev => [...prev.slice(-4), `> ${msg}`]);
+  };
+  
+  const handleExport = () => {
+      const dataStr = JSON.stringify(telemetryRef.current, null, 2);
+      const blob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `experiment_b_telemetry_${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      addLog("DATA EXPORTED SUCCESSFULLY.");
   };
 
   // --- PAPER DEMO SETUP ---
@@ -1080,7 +1175,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                  <button onClick={togglePause} className={`p-1.5 border border-cyan-500/50 ${params.paused ? 'text-yellow-400 animate-pulse' : 'text-cyan-600'}`}>
                     {params.paused ? "||" : ">>"}
                  </button>
-                 <button onClick={() => setShowHelp(true)} className="text-cyan-600 hover:text-cyan-300">?</button>
+                 <button onClick={onShowInfo} className="p-1.5 border border-cyan-500/50 text-cyan-600 hover:text-cyan-300 font-bold px-2.5">?</button>
             </div>
         </div>
 
@@ -1146,6 +1241,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                             setParams={setParams}
                             statsRef={statsRef}
                             addLog={addLog}
+                            telemetryRef={telemetryRef}
                         />
 
                         <div className="flex flex-col gap-2 mt-2">
@@ -1164,6 +1260,12 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                             >
                                 2. TRIGGER: "TICK" ONLY
                             </button>
+                            
+                            {temporalState === 'ready' && (
+                                <button onClick={handleExport} className="w-full py-2 bg-green-900/40 border border-green-500 text-white font-bold text-xs tracking-widest hover:bg-green-800/60">
+                                    EXPORT DATA [JSON]
+                                </button>
+                            )}
                             
                             {temporalState === 'training' && (
                                 <div className="text-[9px] text-green-400 font-mono text-center animate-pulse">
@@ -1214,7 +1316,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
 // --- Status Bar ---
 
 const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats> }> = ({ params, statsRef }) => {
-  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0 });
+  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, trainingProgress: 0 });
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1224,7 +1326,8 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
                 meanSpeed: statsRef.current.meanSpeed,
                 energy: statsRef.current.energy,
                 fps: statsRef.current.fps,
-                temperature: statsRef.current.temperature
+                temperature: statsRef.current.temperature,
+                trainingProgress: statsRef.current.trainingProgress
             });
         }
     }, 200); 
@@ -1243,6 +1346,12 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
              <span className="opacity-50">ENERGY (Ek):</span>
              <span className={stats.energy > 5 ? "text-orange-400 animate-pulse" : "text-cyan-200"}>
                  {stats.energy.toFixed(2)}
+             </span>
+        </div>
+        <div className="flex items-center gap-2 border-l border-cyan-800 pl-2 ml-2">
+             <span className="opacity-50">SYNAPTIC_WEIGHT:</span>
+             <span className="text-white">
+                 {stats.trainingProgress.toFixed(2)}
              </span>
         </div>
         <div className="flex-1"></div>
@@ -1397,9 +1506,11 @@ function App() {
   const [simulationMode, setSimulationMode] = useState<'standard' | 'temporal' | 'inference' | 'paper' | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
   const [teacherFeedback, setTeacherFeedback] = useState<number>(0); 
+  const [showInfo, setShowInfo] = useState(false);
   
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
   const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0 });
+  const telemetryRef = useRef<TelemetryFrame[]>([]);
   
   const spatialRefs = useRef({
       gridHead: new Int32Array(4096),
@@ -1434,6 +1545,16 @@ function App() {
       setSimulationMode(null); 
   };
 
+  const handleOpenInfo = () => {
+      setShowInfo(true);
+      setParams(p => ({ ...p, paused: true }));
+  };
+
+  const handleCloseInfo = () => {
+      setShowInfo(false);
+      setParams(p => ({ ...p, paused: false }));
+  };
+
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans select-none">
       <SimulationCanvas 
@@ -1463,6 +1584,8 @@ function App() {
                 simulationMode={simulationMode} 
                 statsRef={statsRef}
                 onTestComplete={handleTestComplete}
+                telemetryRef={telemetryRef}
+                onShowInfo={handleOpenInfo}
             />
             {simulationMode === 'inference' && (
                 <InferenceControlPanel setFeedback={setTeacherFeedback} feedback={teacherFeedback} />
@@ -1479,6 +1602,10 @@ function App() {
                 </div>
             </div>
           </>
+      )}
+
+      {showInfo && simulationMode && (
+          <InfoModal mode={simulationMode} onClose={handleCloseInfo} />
       )}
 
       {testResults && (
