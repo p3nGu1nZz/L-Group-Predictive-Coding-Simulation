@@ -42,14 +42,6 @@ export interface ParticleData {
   lastActiveTime: Float32Array;
 }
 
-export interface TestResult {
-  testName: string;
-  score: number;
-  maxScore: number;
-  status: 'PASS' | 'FAIL';
-  details: string;
-}
-
 export const CONSTANTS = {
   // Physics
   couplingDecay: 4.0,

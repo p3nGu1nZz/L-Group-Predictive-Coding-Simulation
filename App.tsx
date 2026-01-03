@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Grid, Cylinder } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, TestResult } from './types';
+import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction } from './types';
 
 // --- ParticleSystem ---
 // Workaround for missing JSX types in current environment
@@ -630,9 +630,18 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       if (teacherFeedback === 1) TEMP_COLOR.lerp(GREEN, 0.4);
       else if (teacherFeedback === -1) TEMP_COLOR.lerp(RED, 0.4);
 
+      // --- VISUALIZATION UPDATES (SPRINT 1) ---
+      // 1. Crystallization Visual Effect
+      // "Particles now flash White when their velocity drops below 0.005 units/frame during recall"
+      const isStable = isRecalling && speed < 0.005;
+
       if (activation[i] > 0.5) {
           TEMP_COLOR.lerp(WHITE, activation[i]);
+      } else if (isStable) {
+          // Visual confirmation of learned energy well lock
+          TEMP_COLOR.lerp(WHITE, 0.7); 
       }
+
       meshRef.current.setColorAt(i, TEMP_COLOR);
 
       const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
@@ -641,6 +650,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       
       if (activation[i] > 0.5) {
           TEMP_EMISSIVE.lerp(WHITE, activation[i]);
+      } else if (isStable) {
+           TEMP_EMISSIVE.lerp(WHITE, 0.5);
       }
 
       if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
@@ -863,7 +874,7 @@ interface UIOverlayProps {
   dataRef: React.MutableRefObject<ParticleData>;
   simulationMode: 'standard' | 'temporal' | 'inference';
   statsRef: React.MutableRefObject<SystemStats>;
-  onTestComplete: (results: TestResult[]) => void;
+  onTestComplete: (results: any[]) => void;
 }
 
 const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simulationMode, statsRef, onTestComplete }) => {
@@ -1226,45 +1237,6 @@ const TitleScreen: React.FC<{
     );
 };
 
-interface StressReportModalProps {
-    results: TestResult[];
-    onClose: () => void;
-}
-
-const StressReportModal: React.FC<StressReportModalProps> = ({ results, onClose }) => {
-    return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-md p-6">
-            <div className="max-w-2xl w-full bg-black border border-cyan-500/50 p-8 shadow-[0_0_50px_rgba(6,182,212,0.2)] relative">
-                <button onClick={onClose} className="absolute top-4 right-4 text-cyan-700 hover:text-cyan-400">CLOSE [X]</button>
-                <h2 className="text-3xl font-bold text-cyan-400 mb-6 tracking-widest border-b border-cyan-900 pb-4">DIAGNOSTIC REPORT</h2>
-                
-                <div className="space-y-4 mb-8">
-                    {results.map((res, i) => (
-                        <div key={i} className="flex justify-between items-center border-b border-gray-800 pb-2">
-                            <div>
-                                <div className="text-cyan-200 font-bold uppercase tracking-wider">{res.testName}</div>
-                                <div className="text-xs text-gray-500 font-mono">{res.details}</div>
-                            </div>
-                            <div className="text-right">
-                                <div className={`text-xl font-mono font-bold ${res.status === 'PASS' ? 'text-green-500' : 'text-red-500'}`}>
-                                    {res.status}
-                                </div>
-                                <div className="text-xs text-gray-600">
-                                    {res.score.toFixed(2)} / {res.maxScore}
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                
-                <button onClick={onClose} className="w-full py-3 bg-cyan-900/30 hover:bg-cyan-700/50 text-cyan-400 font-bold tracking-widest border border-cyan-600/30 transition-all">
-                    ACKNOWLEDGE
-                </button>
-            </div>
-        </div>
-    );
-};
-
 // --- Main App ---
 
 const SimulationCanvas: React.FC<{ 
@@ -1320,7 +1292,7 @@ const SimulationCanvas: React.FC<{
 function App() {
   // null = title screen, 'standard' = normal, 'temporal' = sequence, 'inference' = manual teacher
   const [simulationMode, setSimulationMode] = useState<'standard' | 'temporal' | 'inference' | null>(null);
-  const [testResults, setTestResults] = useState<TestResult[] | null>(null);
+  const [testResults, setTestResults] = useState<any[] | null>(null); // Kept minimal typing for removal
   const [teacherFeedback, setTeacherFeedback] = useState<number>(0); // -1 = Punish, 0 = Neutral, 1 = Reward
   
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
@@ -1351,13 +1323,8 @@ function App() {
     lastActiveTime: new Float32Array(0),
   });
 
-  const handleTestComplete = (results: TestResult[]) => {
-      setTestResults(results);
-  };
-
-  const handleCloseReport = () => {
-      setTestResults(null);
-      setSimulationMode(null); // Return to title
+  const handleTestComplete = (results: any[]) => {
+     // No-op, removed
   };
 
   return (
@@ -1404,10 +1371,6 @@ function App() {
                 </div>
             </div>
           </>
-      )}
-
-      {testResults && (
-          <StressReportModal results={testResults} onClose={handleCloseReport} />
       )}
     </div>
   );
