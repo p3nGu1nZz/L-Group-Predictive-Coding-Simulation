@@ -206,7 +206,7 @@ export function step(dt: number) {
     else if (teacherFeedback === -1) systemTemperature = 1.0; 
     else systemTemperature = 0.05;
 
-    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength } = params;
+    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength, dataGravity } = params;
 
     // Data aliases
     const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime, hysteresisState } = data;
@@ -219,7 +219,9 @@ export function step(dt: number) {
     const isEncoding = effectivePlasticity > 0;
     const isRecalling = hasActiveTargets && params.inputText === ""; 
 
-    const k_spring_base = isEncoding ? 0.2 : (isRecalling ? 1.5 : (started ? 0.2 : 0.05));
+    // Use params.dataGravity for target attraction strength
+    // Use fallback values if dataGravity is low (e.g. standard mode default)
+    const k_spring_base = dataGravity > 0 ? dataGravity : (isEncoding ? 0.2 : (isRecalling ? 1.5 : (started ? 0.2 : 0.05)));
     const stiffnessMult = isRecalling ? 0.1 : (isEncoding ? 0.1 : 1.0);
 
     // Spatial Hashing

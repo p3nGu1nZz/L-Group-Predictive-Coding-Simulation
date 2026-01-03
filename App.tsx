@@ -24,7 +24,7 @@ const TEMP_OBJ = new THREE.Object3D();
 let sharedTextCanvas: HTMLCanvasElement | null = null;
 let sharedTextCtx: CanvasRenderingContext2D | null = null;
 
-// Adaptive Text Sampling
+// Adaptive Text Sampling - Revised for Uniform Distribution
 const textToPoints = (text: string, targetCount: number): { positions: Float32Array, count: number } => {
   if (!text) return { positions: new Float32Array(0), count: 0 };
 
@@ -45,42 +45,59 @@ const textToPoints = (text: string, targetCount: number): { positions: Float32Ar
   ctx.fillStyle = 'black';
   ctx.fillRect(0, 0, width, height);
   
-  // Font Sizing
-  const fontSize = 95; 
+  // Font Sizing - Reduced slightly to ensure particle density is high enough for sharp edges
+  const fontSize = 110; 
   ctx.fillStyle = 'white';
-  ctx.font = `bold ${fontSize}px Arial`;
+  ctx.font = `900 ${fontSize}px Rajdhani, Arial Black, sans-serif`; 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, width / 2, height / 2);
 
   const imgData = ctx.getImageData(0, 0, width, height);
-  const points: number[] = [];
+  const candidates: number[] = [];
   
-  // Adaptive step calculation
-  let pixelCount = 0;
-  for(let i=0; i<imgData.data.length; i+=4) {
-      if(imgData.data[i] > 128) pixelCount++;
-  }
-  
-  const step = Math.max(2, Math.floor(Math.sqrt(pixelCount / targetCount)));
-  const scale = 0.08; 
+  // Dense Scan
+  const scanStep = 2; 
 
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x += step) {
+  for (let y = 0; y < height; y += scanStep) {
+    for (let x = 0; x < width; x += scanStep) {
       const index = (y * width + x) * 4;
       if (imgData.data[index] > 128) {
-        const jx = (Math.random() - 0.5) * step * 0.5;
-        const jy = (Math.random() - 0.5) * step * 0.5;
-        
-        const px = (x - width / 2 + jx) * scale;
-        const py = -(y - height / 2 + jy) * scale;
-        const pz = 0; 
-        points.push(px, py, pz);
+        candidates.push(x, y);
       }
     }
   }
   
-  return { positions: new Float32Array(points), count: points.length / 3 };
+  // Shuffle candidates to distribute particles evenly across the entire text shape
+  // This prevents top/bottom clipping if particle counts don't match exactly.
+  for (let i = candidates.length / 2 - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tempX = candidates[i * 2];
+      const tempY = candidates[i * 2 + 1];
+      candidates[i * 2] = candidates[j * 2];
+      candidates[i * 2 + 1] = candidates[j * 2 + 1];
+      candidates[j * 2] = tempX;
+      candidates[j * 2 + 1] = tempY;
+  }
+  
+  const outputCount = Math.min(targetCount, candidates.length / 2);
+  const positions = new Float32Array(outputCount * 3);
+  const scale = 0.07; // Scale up slightly to compensate for smaller font size
+
+  for (let i = 0; i < outputCount; i++) {
+    const x = candidates[i * 2];
+    const y = candidates[i * 2 + 1];
+    
+    // Jitter for organic look
+    const jx = (Math.random() - 0.5) * 1.5;
+    const jy = (Math.random() - 0.5) * 1.5;
+    
+    positions[i * 3] = (x - width / 2 + jx) * scale;
+    positions[i * 3 + 1] = -(y - height / 2 + jy) * scale;
+    positions[i * 3 + 2] = 0; 
+  }
+  
+  return { positions, count: outputCount };
 };
 
 interface ParticleSystemProps {
@@ -116,7 +133,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       }
       
       const count = params.particleCount;
-      const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.8));
+      const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.9)); // Use 90% of particles for text
       
       let offsetX = 0;
       if (params.targetRegion === 0) offsetX = -35;
@@ -141,10 +158,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   useEffect(() => {
       const interval = setInterval(() => {
           const matrix = getMatrixData();
-          if (matrix && matrix.length > 0 && dataRef.current.forwardMatrix.length === matrix.length) {
-              dataRef.current.forwardMatrix.set(matrix);
+          // Directly link the buffer from the worker module since we are in same context.
+          // This avoids alloc issues where dataRef was size 0 initially.
+          if (matrix && matrix.length > 0) {
+              dataRef.current.forwardMatrix = matrix;
           }
-      }, 150);
+      }, 100);
       return () => clearInterval(interval);
   }, []);
 
@@ -277,48 +296,77 @@ const MatrixHUD: React.FC<{
         if (!ctx) return;
         
         const updateInterval = setInterval(() => {
+            const matrix = dataRef.current.forwardMatrix;
             const size = canvasRef.current?.width || 120;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
+            
+            // 1. Fade effect (persistence)
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.15)'; // Slightly stronger fade
             ctx.fillRect(0, 0, size, size);
 
-            // Regions
-            const p1 = size * 0.25; const p2 = size * 0.5; const p3 = size;
-            ctx.fillStyle = 'rgba(6, 182, 212, 0.05)'; ctx.fillRect(0, 0, p1, p1);
-            ctx.fillStyle = 'rgba(236, 72, 153, 0.05)'; ctx.fillRect(p1, p1, p2-p1, p2-p1);
-            ctx.fillStyle = 'rgba(234, 179, 8, 0.05)'; ctx.fillRect(p2, p2, p3-p2, p3-p2);
-
-            const scale = size / particleCount;
-            const step = Math.max(1, Math.floor(particleCount / 150)); 
-            const matrix = dataRef.current.forwardMatrix;
+            // 2. Draw Regions (Background hints)
+            // Region A (0-25%)
+            const rA = size * 0.25;
+            ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)'; // Cyan
+            ctx.strokeRect(0, 0, rA, rA);
             
-            // Check if matrix is ready (prevent flicker on init)
-            if (matrix.length === 0) return;
+            // Region B (25-50%)
+            const rB = size * 0.25;
+            const offsetB = size * 0.25;
+            ctx.strokeStyle = 'rgba(236, 72, 153, 0.2)'; // Pink
+            ctx.strokeRect(offsetB, offsetB, rB, rB);
 
-            for(let j=0; j<particleCount; j+=step) {
-                const y = Math.floor(j * scale);
-                ctx.fillStyle = '#ffffff'; ctx.fillRect(y, y, 1, 1); // Diagonal
-                
-                for (let i=0; i<particleCount; i+=step) {
-                    const idx = j * particleCount + i;
-                    if (idx < matrix.length) {
-                        const wJI = matrix[idx];
-                        if (wJI > 0.05) {
-                            const x = Math.floor(i * scale);
-                            ctx.fillStyle = `rgba(74, 222, 128, ${Math.min(1.0, wJI * 3.0)})`;
-                            ctx.fillRect(x, y, 1, 1);
-                        }
+            // Region Assoc (50-100%)
+            const rC = size * 0.5;
+            const offsetC = size * 0.5;
+            ctx.strokeStyle = 'rgba(234, 179, 8, 0.2)'; // Gold
+            ctx.strokeRect(offsetC, offsetC, rC, rC);
+
+            if (!matrix || matrix.length === 0) return;
+
+            // 3. Draw Synapses
+            // We subsample to keep performance high
+            const step = Math.max(1, Math.floor(particleCount / 64)); 
+            const scale = size / particleCount;
+
+            for(let row=0; row<particleCount; row+=step) {
+                for(let col=0; col<particleCount; col+=step) {
+                    const idx = row * particleCount + col;
+                    // Safety check
+                    if (idx >= matrix.length) continue;
+
+                    const weight = matrix[idx];
+                    if (weight > 0.01) {
+                            const x = col * scale;
+                            const y = row * scale;
+                            
+                            // Color based on weight strength
+                            const intensity = Math.min(1.0, weight * 5.0);
+                            ctx.fillStyle = `rgba(74, 222, 128, ${intensity})`; // Green
+                            const w = Math.max(1, scale * step);
+                            ctx.fillRect(x, y, w, w);
                     }
                 }
             }
+            
+            // 4. Draw Diagonal (Self-connection reference)
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.moveTo(0,0);
+            ctx.lineTo(size, size);
+            ctx.stroke();
+
         }, 100);
 
         return () => clearInterval(updateInterval);
     }, [particleCount]);
 
     return (
-        <div className="absolute bottom-10 left-3 p-1 bg-black/80 border border-cyan-500/30 backdrop-blur-md">
-            <div className="text-[9px] text-cyan-500 font-mono mb-1 tracking-widest">SYNAPTIC_DENSITY</div>
-            <canvas ref={canvasRef} width={120} height={120} className="w-[120px] h-[120px] opacity-90" />
+        <div className="absolute bottom-10 left-3 p-1 bg-black/90 border border-cyan-500/30 backdrop-blur-md shadow-[0_0_15px_rgba(6,182,212,0.1)]">
+            <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] text-cyan-500 font-mono tracking-widest">SYNAPTIC_MAP</span>
+                <span className="text-[8px] text-gray-500 font-mono">LIVE</span>
+            </div>
+            <canvas ref={canvasRef} width={150} height={150} className="w-[150px] h-[150px] border border-gray-900/50" />
         </div>
     );
 };
