@@ -1,46 +1,38 @@
 # Sprint 1 Status: Temporal Dynamics & Active Agency
 
 **Date:** 2025-05-22
-**Milestone:** Feature Complete (Refined UX)
+**Milestone:** CLOSED (All Objectives Met)
 
 ---
 
 ## 1. Executive Summary
 
-We have evolved the simulation into an **Active Inference Engine**. Sprint 1 focuses on two critical cognitive capabilities: **Agency** (thermodynamic searching) and **Prediction** (temporal association). 
-
-We have replaced the abstract "Stress Tests" with two interactive experiments designed to demonstrate these principles intuitively.
+We have successfully evolved the simulation into an **Active Inference Engine**. The application now supports "Thermodynamic Agency" (auto-correction of error) and "Causal Prediction" (learning temporal sequences).
 
 ---
 
-## 2. Refined Experiments
+## 2. Completed Features
 
-### Experiment A: Active Inference (Thermodynamics)
-*   **Concept:** The "Annealing" process. The system attempts to resolve a noisy input into a clear memory.
-*   **Mechanism:** The user acts as the **Variational Free Energy** controller.
-    *   **Agitate (High Temp):** Injects entropy (`v += noise`) to shake the system out of "false" local minima (incorrect shapes).
-    *   **Settle (Low Temp):** Increases damping, allowing the system to fall into the nearest attractor basin.
-*   **Goal:** Guide the system from a high-entropy "Gas" state to a low-entropy "Crystal" state (the target word "ORDER").
+### A. Experiment A: Active Inference (Auto-Agency)
+*   **Manual Control:** Implemented "Agitate" (Fire) and "Freeze" (Ice) buttons allowing users to modulate system temperature to solve optimization problems.
+*   **Procedural Auto-Pilot:** Implemented an `ActiveInferenceController` that monitors system energy and pattern matching.
+    *   **Behavior:** If the system is stuck in a local minimum (Low Energy, Low Match), it automatically pulses the "Agitate" function. If it finds the pattern (High Match), it triggers "Freeze".
+    *   **Visuals:** Added an "AUTO-AGENCY" HUD indicator that reacts to these procedural decisions.
 
-### Experiment B: Causal Prediction (Hebbian Time)
-*   **Concept:** Learning cause-and-effect ($A \rightarrow B$).
-*   **Mechanism:** Spike-Timing-Dependent Plasticity (STDP).
-    *   **Training:** The system flashes "TICK" (Left) followed by "TOCK" (Right). The delay buffer records the temporal offset.
-    *   **Inference:** Triggering "TICK" sends a directed energy wave through the newly formed synapses, causing "TOCK" to manifest phantom-like in the right region without external input.
-*   **Visuals:** Synapses flash **White** when transmitting predictive error forward in time.
+### B. Experiment B: Causal Prediction
+*   **Mechanism:** Implemented Hebbian Temporal Learning (STDP).
+    *   **Training:** The system successfully learns that "TICK" (Region A) precedes "TOCK" (Region B).
+    *   **Inference:** After training, stimulating "TICK" causes a "phantom" activation of "TOCK" in the future, demonstrating predictive morphology.
+*   **Telemetry:** Added a "Causal Flow" metric to track the strength of the learned temporal bond.
 
----
-
-## 3. Technical Implementation Details
-
-### Temporal Asymmetry
-*   **Axonal Delay:** Implemented a smoothing buffer (`delayedActivation`) on particle output.
-*   **Directed Force:** Unlike the symmetric structural bonds, predictive bonds are one-way (`forwardMatrix`).
-
-### Thermodynamic Agency
-*   **Feedback Loop:** User input directly modulates the global `temperature` variable, which scales the magnitude of the Brownian motion vector in the physics integrator.
+### C. Visualization Refinements
+*   **Synaptic Heatmap:** Upgraded the `MatrixHUD` to visualize the *accumulation* of synaptic weights (`forwardMatrix`) over time. Learned connections now glow **Green**, fading slowly to show the history of structural changes, rather than just instantaneous neighbors.
+*   **Text Centering:** Centered the text targets for Experiment A to the Associative Region (Region 2) for better stability.
 
 ---
 
-## 4. Next Steps (Sprint 2)
-*   **Quantum Logic:** Using the stable predictive states from Sprint 1 to implement `XOR` gates via hysteresis thresholds.
+## 3. Post-Mortem & Next Steps
+
+*   **Success:** The system demonstrates that simple thermodynamic rules can simulate "Agency" (the desire to minimize surprise).
+*   **Observation:** While the system can *predict* B from A, it cannot yet perform *logical operations* (e.g., A + B = C, but A alone = 0).
+*   **Transition:** We are moving to **Sprint 2: Quantum Logic**, focusing on hysteresis and non-linear logic gates (XOR) to demonstrate computation.
