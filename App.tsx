@@ -1,11 +1,9 @@
-
-
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult } from './types';
+import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult, SystemStats } from './types';
 import { EXPERIMENT_INFO } from './Info';
 
 // --- ParticleSystem ---
@@ -97,16 +95,6 @@ const textToPoints = (text: string, targetCount: number): { positions: Float32Ar
   
   return { positions: new Float32Array(points), count: points.length / 3 };
 };
-
-interface SystemStats {
-  meanError: number;
-  meanSpeed: number;
-  energy: number;
-  fps: number;
-  temperature: number;
-  isStable: boolean;
-  trainingProgress: number; 
-}
 
 interface ParticleSystemProps {
   params: SimulationParams;
@@ -392,6 +380,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     let totalSpeed = 0;
     let totalKineticEnergy = 0;
     let totalSynapticWeight = 0;
+    
+    // Stats accumulators
+    let sumCosPhase = 0;
+    let sumSinPhase = 0;
+    let netSpin = 0;
 
     const activationDecay = 0.95;
     const delayAlpha = 0.15; 
@@ -408,6 +401,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const nOffset = i * 48; 
       const nCount = spatialRefs.current.neighborCounts[i];
       const isTarget = hasTarget[i] === 1;
+
+      // Stats Accumulation
+      sumCosPhase += Math.cos(phase[i]);
+      sumSinPhase += Math.sin(phase[i]);
+      netSpin += spin[i];
 
       // Update Activation States
       if (!isTarget) activation[i] *= activationDecay;
@@ -568,9 +566,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                     lineColors[li] = hue * 2; lineColors[li+1] = hue; lineColors[li+2] = 0.5;
                     lineColors[li+3] = hue * 2; lineColors[li+4] = hue; lineColors[li+5] = 0.5;
                 } else {
-                    // REDUCED GLOW (0.5, 1.2 vs 2.0, 5.0)
-                    lineColors[li] = 0; lineColors[li+1] = 0.5; lineColors[li+2] = 1.2; 
-                    lineColors[li+3] = 0; lineColors[li+4] = 0.5; lineColors[li+5] = 1.2;
+                    // REDUCED GLOW (SUBTLER LINES)
+                    // Reduced B channel from 1.2 to 0.8, reduced G from 0.5 to 0.3
+                    lineColors[li] = 0; lineColors[li+1] = 0.3; lineColors[li+2] = 0.8; 
+                    lineColors[li+3] = 0; lineColors[li+4] = 0.3; lineColors[li+5] = 0.8;
                 }
                 lineIndex++;
             }
@@ -669,6 +668,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     }
 
     if (statsRef.current) {
+        // Calculate Global Order Parameters
+        const phaseOrder = Math.sqrt(sumCosPhase * sumCosPhase + sumSinPhase * sumSinPhase) / count;
+        const spinOrder = Math.abs(netSpin) / count;
+        const avgEntropy = totalKineticEnergy / count;
+        const match = Math.max(0, 1.0 - (totalError / (activeTargetCount || 1)) / 10.0) * 100;
+
         statsRef.current.meanError = activeTargetCount > 0 ? totalError / activeTargetCount : 0;
         statsRef.current.meanSpeed = totalSpeed / count;
         statsRef.current.energy = totalKineticEnergy; 
@@ -678,6 +683,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         // Consider stable if low error OR very low energy (settled in local minima)
         statsRef.current.isStable = (totalKineticEnergy < 2.0 && totalError < (activeTargetCount * 0.1)) || totalKineticEnergy < 0.05;
         statsRef.current.trainingProgress = totalSynapticWeight;
+        
+        // Advanced Telemetry Updates
+        statsRef.current.phaseOrder = phaseOrder;
+        statsRef.current.spinOrder = spinOrder;
+        statsRef.current.entropy = avgEntropy;
+        statsRef.current.patternMatch = match;
     }
     
     meshRef.current.instanceMatrix.needsUpdate = true;
@@ -764,7 +775,8 @@ const MatrixHUD: React.FC<{
         
         const updateInterval = setInterval(() => {
             const size = canvasRef.current?.width || 120;
-            ctx.fillStyle = '#000000';
+            // Use semi-transparent fill to create trails/accumulation
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
             ctx.fillRect(0, 0, size, size);
 
             const p0 = 0;
@@ -772,13 +784,13 @@ const MatrixHUD: React.FC<{
             const p2 = size * 0.5;
             const p3 = size;
             
-            ctx.fillStyle = 'rgba(6, 182, 212, 0.1)'; 
+            ctx.fillStyle = 'rgba(6, 182, 212, 0.05)'; 
             ctx.fillRect(p0, p0, p1, p1);
 
-            ctx.fillStyle = 'rgba(236, 72, 153, 0.1)'; 
+            ctx.fillStyle = 'rgba(236, 72, 153, 0.05)'; 
             ctx.fillRect(p1, p1, p2-p1, p2-p1);
 
-            ctx.fillStyle = 'rgba(234, 179, 8, 0.1)'; 
+            ctx.fillStyle = 'rgba(234, 179, 8, 0.05)'; 
             ctx.fillRect(p2, p2, p3-p2, p3-p2);
 
             const scale = size / particleCount;
@@ -826,13 +838,17 @@ const InferenceControlPanel: React.FC<{
     return (
         <div className="absolute top-1/2 left-6 -translate-y-1/2 flex flex-col gap-4 pointer-events-auto z-50">
              <div className="text-[10px] text-yellow-400 font-bold uppercase tracking-widest mb-[-10px] ml-1">Thermodynamic Controls</div>
-             <div className="flex flex-col gap-2 p-2 bg-black/80 border border-yellow-800 rounded backdrop-blur-md w-24">
-                
+             <div className="flex flex-col gap-2 p-2 bg-black/80 border border-yellow-800 rounded backdrop-blur-md w-24 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-full bg-yellow-900/10 pointer-events-none animate-pulse z-0"></div>
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 opacity-30">
+                    <span className="text-[40px] text-yellow-500 font-bold rotate-[-45deg] border-2 border-yellow-500 px-2 rounded">AUTO</span>
+                </div>
+
                 <button 
                     onMouseDown={() => setFeedback(1)} 
                     onMouseUp={() => setFeedback(0)}
                     onMouseLeave={() => setFeedback(0)}
-                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest ${
+                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest relative z-20 ${
                         feedback === 1 
                         ? 'border-green-400 bg-green-500/20 text-green-400 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-95' 
                         : 'border-green-900/50 text-green-800 hover:border-green-500/50 hover:text-green-500'
@@ -842,13 +858,13 @@ const InferenceControlPanel: React.FC<{
                     <span>FREEZE</span>
                 </button>
                 
-                <div className="h-px bg-gray-800 w-full"></div>
+                <div className="h-px bg-gray-800 w-full relative z-20"></div>
                 
                 <button 
                     onMouseDown={() => setFeedback(-1)} 
                     onMouseUp={() => setFeedback(0)}
                     onMouseLeave={() => setFeedback(0)}
-                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest ${
+                    className={`h-16 border-2 transition-all duration-100 flex flex-col items-center justify-center font-bold text-[10px] tracking-widest relative z-20 ${
                         feedback === -1 
                         ? 'border-red-400 bg-red-500/20 text-red-400 shadow-[0_0_20px_rgba(239,68,68,0.5)] scale-95' 
                         : 'border-red-900/50 text-red-800 hover:border-red-500/50 hover:text-red-500'
@@ -865,8 +881,47 @@ const InferenceControlPanel: React.FC<{
                  ></div>
                  <div className="absolute -left-6 bottom-0 text-[9px] text-gray-500 rotate-[-90deg] origin-bottom-right translate-x-full mb-1">TEMP</div>
              </div>
+             
+             <div className="bg-black/80 border border-yellow-800/50 p-1 text-[9px] text-yellow-300 font-mono text-center tracking-wider animate-pulse">
+                 AUTO-AGENCY ACTIVE
+             </div>
         </div>
     )
+}
+
+// --- Active Inference Auto-Controller (Procedural) ---
+const ActiveInferenceController: React.FC<{
+    statsRef: React.MutableRefObject<SystemStats>;
+    setTeacherFeedback: (val: number) => void;
+}> = ({ statsRef, setTeacherFeedback }) => {
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (!statsRef.current) return;
+            const { energy, patternMatch } = statsRef.current;
+
+            // PROCEDURAL LOGIC:
+            // 1. If match is high > 90%, FREEZE (1) to lock it.
+            // 2. If stuck in local minima (Energy low < 0.5 but Match low < 70%), AGITATE (-1).
+            // 3. Otherwise, NEUTRAL (0) to let physics settle.
+            
+            if (patternMatch > 90) {
+                setTeacherFeedback(1); // FREEZE
+            } else if (energy < 0.8 && patternMatch < 60) {
+                // Pulse agitation to break stuck state
+                setTeacherFeedback(-1); // AGITATE
+                setTimeout(() => setTeacherFeedback(0), 300); // Short burst
+            } else {
+                setTeacherFeedback(0); // NEUTRAL
+            }
+        }, 500); // Check twice a second
+
+        return () => {
+            clearInterval(interval);
+            setTeacherFeedback(0);
+        };
+    }, []);
+
+    return null;
 }
 
 // --- Temporal Training Controller (State Machine) ---
@@ -1031,12 +1086,14 @@ interface UIOverlayProps {
   onTestComplete: (results: TestResult[]) => void;
   telemetryRef: React.MutableRefObject<TelemetryFrame[]>;
   onShowInfo: () => void;
+  onExit: () => void;
 }
 
-const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simulationMode, statsRef, onTestComplete, telemetryRef, onShowInfo }) => {
+const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simulationMode, statsRef, onTestComplete, telemetryRef, onShowInfo, onExit }) => {
   const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'entropy' | 'observation' | 'encoding' | 'amnesia' | 'recall'>('idle');
   const [testLogs, setTestLogs] = useState<string[]>([]);
   const [temporalState, setTemporalState] = useState<'idle' | 'training' | 'ready'>('idle');
+  const [isMinimized, setIsMinimized] = useState(false);
 
   const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
     setParams(prev => ({ ...prev, [key]: value }));
@@ -1088,8 +1145,10 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
   // --- EXPERIMENT A: ACTIVE INFERENCE (THERMODYNAMICS) ---
   useEffect(() => {
       if (simulationMode === 'inference') {
-          setParams(prev => ({ ...prev, showRegions: true, inputText: "ORDER", targetRegion: 0 }));
+          // Changed targetRegion from 0 (Left) to 2 (Associative/Center)
+          setParams(prev => ({ ...prev, showRegions: true, inputText: "ORDER", targetRegion: 2 }));
           addLog("SYSTEM INITIALIZED. PATTERN: 'ORDER'");
+          addLog("AGENCY: PROCEDURAL");
       }
   }, [simulationMode]);
 
@@ -1159,28 +1218,52 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
     }
   };
 
-  const panelClass = "bg-black/80 backdrop-blur-md border border-cyan-500/30 p-3 text-cyan-100 shadow-[0_0_15px_rgba(6,182,212,0.15)] relative overflow-hidden";
+  const panelClass = "bg-black/80 backdrop-blur-md border border-cyan-500/30 p-3 text-cyan-100 shadow-[0_0_15px_rgba(6,182,212,0.15)] relative overflow-hidden transition-all duration-300 ease-in-out";
 
   return (
     <div className="absolute top-0 right-0 p-4 w-full md:w-80 h-full pointer-events-none flex flex-col items-end font-['Rajdhani'] pb-8">
       <div className="scanlines"></div>
 
-      <div className={`${panelClass} pointer-events-auto flex flex-col gap-3 w-full clip-path-polygon`}>
+      <div className={`${panelClass} pointer-events-auto w-full clip-path-polygon ${isMinimized ? 'h-[60px]' : 'h-auto'} flex flex-col gap-3`}>
         <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyan-400"></div>
         <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyan-400"></div>
 
-        <div className="flex justify-between items-center border-b border-cyan-900/50 pb-2">
-            <h1 className="text-lg font-bold text-cyan-400 tracking-widest drop-shadow-[0_0_5px_rgba(34,211,238,0.8)]">NEURO_HOLOGRAPHIC</h1>
-            <div className="flex items-center gap-2">
-                 <button onClick={togglePause} className={`p-1.5 border border-cyan-500/50 ${params.paused ? 'text-yellow-400 animate-pulse' : 'text-cyan-600'}`}>
+        <div className="flex justify-between items-center border-b border-cyan-900/50 pb-2 flex-shrink-0">
+            <h1 className="text-lg font-bold text-cyan-400 tracking-widest drop-shadow-[0_0_5px_rgba(34,211,238,0.8)]">NEURO_HOLO</h1>
+            <div className="flex items-center gap-1">
+                 <button 
+                    onClick={togglePause} 
+                    className={`p-1.5 border border-cyan-500/50 px-2.5 transition-colors ${params.paused ? 'bg-red-500/50 text-white animate-pulse border-red-400' : 'text-cyan-600 hover:text-cyan-300'}`}
+                    title="Pause/Resume"
+                 >
                     {params.paused ? "||" : ">>"}
                  </button>
-                 <button onClick={onShowInfo} className="p-1.5 border border-cyan-500/50 text-cyan-600 hover:text-cyan-300 font-bold px-2.5">?</button>
+                 <button 
+                    onClick={onShowInfo} 
+                    className="p-1.5 border border-cyan-500/50 text-cyan-600 hover:text-cyan-300 font-bold px-2.5"
+                    title="Info & Instructions"
+                 >
+                     ?
+                 </button>
+                 <button 
+                    onClick={() => setIsMinimized(!isMinimized)} 
+                    className="p-1.5 border border-cyan-500/50 text-cyan-600 hover:text-cyan-300 font-bold px-2.5"
+                    title={isMinimized ? "Expand" : "Minimize"}
+                 >
+                     {isMinimized ? "+" : "_"}
+                 </button>
+                 <button 
+                    onClick={onExit} 
+                    className="p-1.5 border border-red-500/50 text-red-600 hover:bg-red-900/30 hover:text-red-400 font-bold px-2.5"
+                    title="Exit to Title"
+                 >
+                     X
+                 </button>
             </div>
         </div>
 
         {/* CONTROLLER PANEL */}
-        <div className="space-y-3 pt-2">
+        <div className={`space-y-3 pt-2 overflow-hidden transition-opacity duration-300 ${isMinimized ? 'opacity-0' : 'opacity-100'}`}>
             <div className="bg-cyan-950/30 border border-cyan-500/20 p-3 text-center relative">
                 {simulationMode === 'paper' ? (
                     <div className="text-left">
@@ -1297,15 +1380,15 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
                         </div>
                 )}
             </div>
-        </div>
-        
-        {/* Tools */}
-        <div className="mt-2 pt-2 border-t border-cyan-900/50 space-y-2">
-            <div className="flex items-center justify-between">
-                <span className="text-[10px] text-cyan-500 font-bold uppercase">Regions Viz</span>
-                <button onClick={() => handleChange('showRegions', !params.showRegions)} className={`px-2 py-1 text-[9px] border ${params.showRegions ? 'bg-cyan-500 text-black border-cyan-400' : 'text-cyan-600 border-cyan-800'}`}>
-                    {params.showRegions ? "VISIBLE" : "HIDDEN"}
-                </button>
+            
+            {/* Tools */}
+            <div className="mt-2 pt-2 border-t border-cyan-900/50 space-y-2">
+                <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-cyan-500 font-bold uppercase">Regions Viz</span>
+                    <button onClick={() => handleChange('showRegions', !params.showRegions)} className={`px-2 py-1 text-[9px] border ${params.showRegions ? 'bg-cyan-500 text-black border-cyan-400' : 'text-cyan-600 border-cyan-800'}`}>
+                        {params.showRegions ? "VISIBLE" : "HIDDEN"}
+                    </button>
+                </div>
             </div>
         </div>
       </div>
@@ -1315,20 +1398,13 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
 
 // --- Status Bar ---
 
-const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats> }> = ({ params, statsRef }) => {
-  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, trainingProgress: 0 });
+const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats>, mode: string }> = ({ params, statsRef, mode }) => {
+  const [stats, setStats] = useState<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0, phaseOrder: 0, spinOrder: 0, entropy: 0, patternMatch: 0 });
 
   useEffect(() => {
     const interval = setInterval(() => {
         if (statsRef.current) {
-            setStats({
-                meanError: statsRef.current.meanError,
-                meanSpeed: statsRef.current.meanSpeed,
-                energy: statsRef.current.energy,
-                fps: statsRef.current.fps,
-                temperature: statsRef.current.temperature,
-                trainingProgress: statsRef.current.trainingProgress
-            });
+            setStats({ ...statsRef.current });
         }
     }, 200); 
     return () => clearInterval(interval);
@@ -1336,24 +1412,61 @@ const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRef
 
   return (
     <div className="absolute bottom-0 left-0 w-full h-6 bg-cyan-950/90 border-t border-cyan-800 flex items-center px-3 text-[11px] font-mono text-cyan-400 gap-6 select-none z-50 backdrop-blur-sm">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-[80px]">
             <span className="opacity-50">STATUS:</span>
             <span className={stats.meanError < 0.5 ? "text-green-400" : "text-yellow-400"}>
                 {stats.meanError < 0.5 ? "STABLE" : "CONVERGING"}
             </span>
         </div>
-        <div className="flex items-center gap-2">
-             <span className="opacity-50">ENERGY (Ek):</span>
-             <span className={stats.energy > 5 ? "text-orange-400 animate-pulse" : "text-cyan-200"}>
-                 {stats.energy.toFixed(2)}
-             </span>
-        </div>
-        <div className="flex items-center gap-2 border-l border-cyan-800 pl-2 ml-2">
-             <span className="opacity-50">SYNAPTIC_WEIGHT:</span>
-             <span className="text-white">
-                 {stats.trainingProgress.toFixed(2)}
-             </span>
-        </div>
+
+        {/* --- DYNAMIC STATS BASED ON MODE --- */}
+        {mode === 'paper' ? (
+            <>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">PHASE_SYNC (r):</span>
+                    <span className="text-purple-300">{stats.phaseOrder.toFixed(3)}</span>
+                </div>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">SPIN_ALIGN:</span>
+                    <span className="text-purple-300">{stats.spinOrder.toFixed(3)}</span>
+                </div>
+            </>
+        ) : mode === 'inference' ? (
+            <>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">FREE_ENERGY (F):</span>
+                    <span className="text-yellow-300">{(stats.meanError + stats.entropy * 0.5).toFixed(3)}</span>
+                </div>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">TEMP (T):</span>
+                    <span className={stats.temperature > 0.5 ? "text-red-400" : "text-cyan-300"}>{stats.temperature.toFixed(2)}</span>
+                </div>
+            </>
+        ) : mode === 'temporal' ? (
+            <>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">PRED_ERROR:</span>
+                    <span className="text-green-300">{stats.meanError.toFixed(3)}</span>
+                </div>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">CAUSAL_FLOW:</span>
+                    <span className="text-white">{stats.trainingProgress.toFixed(2)}</span>
+                </div>
+            </>
+        ) : (
+            // STANDARD MODE
+            <>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">PATTERN_MATCH:</span>
+                    <span className="text-cyan-200">{stats.patternMatch.toFixed(1)}%</span>
+                </div>
+                <div className="flex items-center gap-2 border-l border-cyan-800 pl-2">
+                    <span className="opacity-50">ENTROPY (S):</span>
+                    <span className="text-cyan-200">{stats.entropy.toFixed(3)}</span>
+                </div>
+            </>
+        )}
+
         <div className="flex-1"></div>
         <div className="flex items-center gap-2">
             <span className="opacity-50">FPS:</span>
@@ -1456,6 +1569,54 @@ const StressReportModal: React.FC<StressReportModalProps> = ({ results, onClose 
     );
 };
 
+const KeyboardCameraRig = ({ controlsRef }: { controlsRef: React.MutableRefObject<any> }) => {
+    const { camera } = useThree();
+    const keys = useRef<{ [key: string]: boolean }>({});
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                keys.current[e.key] = true;
+            }
+        };
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                keys.current[e.key] = false;
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
+    }, []);
+
+    useFrame((state, delta) => {
+        if (!controlsRef.current) return;
+        const speed = 40 * delta; 
+
+        if (keys.current['ArrowUp']) {
+            camera.position.y += speed;
+            controlsRef.current.target.y += speed;
+        }
+        if (keys.current['ArrowDown']) {
+            camera.position.y -= speed;
+            controlsRef.current.target.y -= speed;
+        }
+        if (keys.current['ArrowLeft']) {
+            camera.position.x -= speed;
+            controlsRef.current.target.x -= speed;
+        }
+        if (keys.current['ArrowRight']) {
+            camera.position.x += speed;
+            controlsRef.current.target.x += speed;
+        }
+    });
+
+    return null;
+};
+
 // --- Main App ---
 
 const SimulationCanvas: React.FC<{ 
@@ -1466,6 +1627,8 @@ const SimulationCanvas: React.FC<{
     spatialRefs: React.MutableRefObject<{ neighborList: Int32Array; neighborCounts: Int32Array; gridHead: Int32Array; gridNext: Int32Array; frameCounter: number; }>,
     teacherFeedback: number
 }> = ({ params, dataRef, statsRef, started, spatialRefs, teacherFeedback }) => {
+  const controlsRef = useRef<any>(null);
+
   return (
     <Canvas camera={{ position: [0, 0, 35], fov: 45 }} gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
         <color attach="background" args={['#020205']} />
@@ -1488,13 +1651,15 @@ const SimulationCanvas: React.FC<{
             <Vignette eskil={false} offset={0.1} darkness={1.1} />
         </EffectComposer>
 
+        <KeyboardCameraRig controlsRef={controlsRef} />
+
         <OrbitControls 
+            ref={controlsRef}
             makeDefault 
             autoRotate={!started} 
             autoRotateSpeed={0.5} 
             maxPolarAngle={Math.PI / 1.5} 
             minPolarAngle={Math.PI / 4} 
-            listenToKeyEvents={window}
             enableDamping={true}
             dampingFactor={0.1}
         />
@@ -1509,8 +1674,9 @@ function App() {
   const [showInfo, setShowInfo] = useState(false);
   
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
-  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0 });
+  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0, phaseOrder: 0, spinOrder: 0, entropy: 0, patternMatch: 0 });
   const telemetryRef = useRef<TelemetryFrame[]>([]);
+  const memoryBank = useRef<Map<number, MemorySnapshot>>(new Map());
   
   const spatialRefs = useRef({
       gridHead: new Int32Array(4096),
@@ -1555,6 +1721,28 @@ function App() {
       setParams(p => ({ ...p, paused: false }));
   };
 
+  const handleExit = () => {
+      setSimulationMode(null);
+      setParams(DEFAULT_PARAMS);
+      setTeacherFeedback(0);
+      setTestResults(null);
+      
+      // Clear Data Ref
+      const count = params.particleCount;
+      dataRef.current.x.fill(0);
+      dataRef.current.v.fill(0);
+      dataRef.current.activation.fill(0);
+      dataRef.current.forwardMatrix.fill(0);
+      dataRef.current.hasTarget.fill(0);
+      
+      // Clear Memory Bank
+      memoryBank.current.clear();
+      
+      // Clear Stats
+      statsRef.current = { meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0, phaseOrder: 0, spinOrder: 0, entropy: 0, patternMatch: 0 };
+      telemetryRef.current = [];
+  };
+
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans select-none">
       <SimulationCanvas 
@@ -1586,11 +1774,15 @@ function App() {
                 onTestComplete={handleTestComplete}
                 telemetryRef={telemetryRef}
                 onShowInfo={handleOpenInfo}
+                onExit={handleExit}
             />
             {simulationMode === 'inference' && (
-                <InferenceControlPanel setFeedback={setTeacherFeedback} feedback={teacherFeedback} />
+                <>
+                    <InferenceControlPanel setFeedback={setTeacherFeedback} feedback={teacherFeedback} />
+                    <ActiveInferenceController statsRef={statsRef} setTeacherFeedback={setTeacherFeedback} />
+                </>
             )}
-            <StatusBar params={params} statsRef={statsRef} />
+            <StatusBar params={params} statsRef={statsRef} mode={simulationMode} />
             <MatrixHUD spatialRefs={spatialRefs} particleCount={params.particleCount} />
             <div className="absolute top-6 left-6 pointer-events-none hidden md:block mix-blend-screen">
                 <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-500 tracking-tighter" style={{ fontFamily: 'Rajdhani' }}>

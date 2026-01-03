@@ -48,6 +48,21 @@ export interface ParticleData {
   lastActiveTime: Float32Array;
 }
 
+export interface SystemStats {
+  meanError: number;
+  meanSpeed: number;
+  energy: number;
+  fps: number;
+  temperature: number;
+  isStable: boolean;
+  trainingProgress: number; 
+  // Advanced Telemetry
+  phaseOrder: number;   // Kuramoto Index (0-1): Global Phase Synchronization
+  spinOrder: number;    // Magnetization (0-1): Net Spin Alignment
+  entropy: number;      // Thermodynamic Entropy proxy
+  patternMatch: number; // % Similarity to target state
+}
+
 export interface TestResult {
   testName: string;
   score: number;
@@ -85,7 +100,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   memoryResetTrigger: 0,
   memoryAction: { type: 'idle', slot: 0, triggerId: 0 },
   paused: false,
-  showRegions: false,
+  showRegions: true, // Default to true
   chaosMode: false,
   
   usePaperPhysics: false,
