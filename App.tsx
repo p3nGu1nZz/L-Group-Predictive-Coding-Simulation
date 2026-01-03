@@ -82,24 +82,26 @@ const textToPoints = (text: string, targetCount: number): { positions: Float32Ar
   return { positions: new Float32Array(points), count: points.length / 3 };
 };
 
+interface SystemStats {
+  meanError: number;
+  meanSpeed: number;
+  fps: number;
+}
+
 interface ParticleSystemProps {
   params: SimulationParams;
   dataRef: React.MutableRefObject<ParticleData>;
+  statsRef: React.MutableRefObject<SystemStats>;
 }
 
 interface MemorySnapshot {
-  matrix: Float32Array;
   x: Float32Array;
-  v: Float32Array; 
-  phase: Float32Array; 
-  spin: Float32Array; 
-  target: Float32Array;
-  hasTarget: Uint8Array;
-  activation: Float32Array;
   regionID: Uint8Array;
+  // In a full simulation, we would save weights (matrix). 
+  // For this visual demo, saving the Attractor State (x positions) simulates the stable energy well.
 }
 
-const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
+const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsRef }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const outlineRef = useRef<THREE.InstancedMesh>(null); 
   const ghostRef = useRef<THREE.InstancedMesh>(null);
@@ -169,9 +171,45 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     }
   }, [params.particleCount]);
 
+  // Memory Action Handler (Save/Load)
+  useEffect(() => {
+    const { type, slot, triggerId } = params.memoryAction;
+    if (type === 'idle' || triggerId === 0) return;
+
+    if (type === 'save') {
+        // Deep copy the current spatial configuration (Attractor State)
+        const snapshot: MemorySnapshot = {
+            x: new Float32Array(data.current.x),
+            regionID: new Uint8Array(data.current.regionID)
+        };
+        memoryBank.current.set(slot, snapshot);
+        console.log(`[MEMORY] Saved state to Slot ${slot}`);
+    } 
+    else if (type === 'load') {
+        const snapshot = memoryBank.current.get(slot);
+        if (snapshot) {
+            // Restore the learned attractor state as the TARGET
+            // This simulates the internal memory guiding the particles
+            data.current.target.set(snapshot.x);
+            
+            // Set hasTarget to 1 so physics engine pulls them there
+            data.current.hasTarget.fill(1);
+            
+            // Note: We do NOT set params.inputText. This proves the system is 
+            // recalling from internal weights (simulated here via target) rather than external input.
+            console.log(`[MEMORY] Recalled state from Slot ${slot}`);
+        }
+    }
+  }, [params.memoryAction.triggerId]);
+
   // Text Processing
   useEffect(() => {
     if (params.paused) return; 
+
+    // Only process text if there IS text. 
+    // If text is empty, we don't clear targets immediately to allow "Memory Load" to persist its targets.
+    // We only clear if specific manual action or phase requires it.
+    if (!params.inputText) return;
 
     const count = params.particleCount;
     const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.8));
@@ -220,7 +258,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
   }, [maxConnections]);
 
   // PHYSICS LOOP
-  useFrame((state) => {
+  useFrame((state, delta) => {
     if (!meshRef.current || !linesRef.current || params.paused) return;
 
     const { equilibriumDistance, stiffness, couplingDecay, phaseSyncRate, plasticity, chaosMode } = params;
@@ -232,7 +270,21 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     let activeTargetCount = 0;
     for(let k = 0; k < count; k++) if(hasTarget[k] === 1) activeTargetCount++;
     const hasActiveTargets = activeTargetCount > 0;
-    const damping = chaosMode ? 0.98 : (hasActiveTargets ? (plasticity > 0 ? 0.6 : 0.6) : 0.90);
+    
+    // --- ADAPTIVE LEARNING ALGORITHM ---
+    // Detect Phase: Encoding (Plasticity ON) vs Recall (Internal Targets Only)
+    const isEncoding = plasticity > 0;
+    const isRecalling = hasActiveTargets && params.inputText === ""; // Heuristic: Targets exist but no active input text
+
+    // Dynamic Physics Parameters
+    // Data Gravity: Boosted during Encoding to ensure high fidelity storage.
+    const k_spring_base = isEncoding ? 1.2 : (isRecalling ? 0.4 : 0.2);
+
+    // Structural Stiffness:
+    // Encoding: Reduced (2.0) to allow Data Gravity to dominate.
+    // Recall: High (8.0) to maintain the "Crystalline" structure.
+    const stiffnessMult = isRecalling ? 8.0 : (isEncoding ? 2.0 : 1.0);
+
 
     // Spatial Hashing
     spatialRefs.current.frameCounter++;
@@ -284,6 +336,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
     const linePositions = linesRef.current.geometry.attributes.position.array as Float32Array;
     const lineColors = linesRef.current.geometry.attributes.color.array as Float32Array;
     let totalError = 0;
+    let totalSpeed = 0;
 
     for (let i = 0; i < count; i++) {
       let fx = 0, fy = 0, fz = 0;
@@ -293,6 +346,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       const rid = regionID[i];
       const nOffset = i * 48; 
       const nCount = spatialRefs.current.neighborCounts[i];
+      const isTarget = hasTarget[i] === 1;
 
       if (chaosMode) {
           fx += (Math.random() - 0.5) * 1.5;
@@ -307,10 +361,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
           const dz = target[idx3+2] - iz;
           const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
           totalError += dist;
-          const k_spring = 0.2; 
-          fx += dx * k_spring;
-          fy += dy * k_spring;
-          fz += dz * k_spring;
+          
+          // Adaptive Data Gravity
+          fx += dx * k_spring_base;
+          fy += dy * k_spring_base;
+          fz += dz * k_spring_base;
       }
 
       const interactionStrength = hasTarget[i] ? 0.1 : 1.0;
@@ -330,11 +385,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
             const r0 = equilibriumDistance; 
             let force = 0;
             
-            // SPRINT 0: Snap-to-Grid Physics
-            // Significantly stiffen bonds when not in input-driven mode to stabilize recall
-            // We also apply this during "Learning" (plasticity) to help crystallization
-            const stiffnessMult = (!hasActiveTargets || plasticity > 0) ? 8.0 : 1.0;
-
+            // Snap-to-Grid Physics (Sprint 0 + Adaptive Learning)
             if (dist < r0) force = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
             else if (!hasTarget[i]) force = stiffness * stiffnessMult * (dist - r0) * 0.1;
             
@@ -349,8 +400,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
                 linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
                 linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
                 
-                // INTENSE LINE GLOW: Overdrive the colors for bloom
-                // Cyan/Electric Blue color profile
+                // INTENSE LINE GLOW
                 lineColors[li] = 0; lineColors[li+1] = 2.0; lineColors[li+2] = 5.0; 
                 lineColors[li+3] = 0; lineColors[li+4] = 2.0; lineColors[li+5] = 5.0;
                 lineIndex++;
@@ -358,9 +408,40 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
           }
       }
 
-      v[idx3] = v[idx3] * damping + fx;
-      v[idx3+1] = v[idx3+1] * damping + fy;
-      v[idx3+2] = v[idx3+2] * damping + fz;
+      // --- DIFFERENTIAL DAMPING ---
+      // We apply different friction based on the particle's role and the current phase.
+      let particleDamping = 0.85; // Default "solvent" flow
+      
+      if (chaosMode) {
+          particleDamping = 0.98;
+      } else if (isEncoding) {
+          // Phase 3: Crystallization
+          // Targets freeze (crystallize) rapidly to lock in the pattern accuracy
+          // Background particles remain fluid to act as a dynamic medium
+          particleDamping = isTarget ? 0.4 : 0.90;
+      } else if (isRecalling) {
+          // Phase 5: Solid State Recall
+          // The entire system cools down to display the memory
+          particleDamping = 0.6;
+      }
+
+      v[idx3] = v[idx3] * particleDamping + fx;
+      v[idx3+1] = v[idx3+1] * particleDamping + fy;
+      v[idx3+2] = v[idx3+2] * particleDamping + fz;
+      
+      // ZERO-POINT ENERGY (Thermal Jitter)
+      // Even when "fixed", quantum particles vibrate. This prevents the "broken code" look.
+      const speedSq = v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2;
+      const speed = Math.sqrt(speedSq);
+      totalSpeed += speed;
+
+      if (speedSq < 0.0001 && !chaosMode) {
+           const jitter = 0.002;
+           v[idx3] += (Math.random() - 0.5) * jitter;
+           v[idx3+1] += (Math.random() - 0.5) * jitter;
+           v[idx3+2] += (Math.random() - 0.5) * jitter;
+      }
+
       x[idx3] += v[idx3]; x[idx3+1] += v[idx3+1]; x[idx3+2] += v[idx3+2];
       
       const rSq = x[idx3]**2 + x[idx3+1]**2 + x[idx3+2]**2;
@@ -376,36 +457,30 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       if(outlineRef.current) outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
 
       // --- COLOR DYNAMICS ---
-      const speed = Math.sqrt(v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2);
       const entropy = Math.min(1.0, speed * 0.5); 
 
       // Region Base Colors
-      // rid is defined above loop
       let r=0, g=0, b=0;
       if (rid === 0) { r=0.1; g=1.0; b=1.0; } // Cyan
       else if (rid === 1) { r=1.0; g=0.1; b=1.0; } // Magenta
       else { r=1.0; g=0.8; b=0.0; } // Gold
 
-      // CORE: Dark metallic
       const coreMix = entropy * 2.0; 
       TEMP_COLOR.setRGB(r * coreMix, g * coreMix, b * coreMix); 
       
       // SPRINT 0: Visual Crystallization Feedback
-      // Flash white when particle is extremely stable (velocity approx 0)
-      if (speed < 0.008 && !chaosMode) {
-          const flash = 1.0 - (speed / 0.008); // 0 to 1
+      // Only flash meaningful particles, not the background solvent
+      if (speed < 0.008 && !chaosMode && (isTarget || isRecalling)) {
+          const flash = 1.0 - (speed / 0.008); 
           TEMP_COLOR.lerp(WHITE, flash * 0.8);
       }
       meshRef.current.setColorAt(i, TEMP_COLOR);
 
-      // GLOW (HALO): Overdrive intensity for hot bloom
       const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
-      // High base intensity (2.5) + Entropy boost (4.0) = Very bright edges
       const glowIntensity = 2.5 + entropy * 4.0; 
       TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
       
-      // Flash halo white too
-      if (speed < 0.008 && !chaosMode) {
+      if (speed < 0.008 && !chaosMode && (isTarget || isRecalling)) {
           const flash = 1.0 - (speed / 0.008);
           TEMP_EMISSIVE.lerp(WHITE, flash);
       }
@@ -413,7 +488,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
     }
 
-    systemState.current.meanError = activeTargetCount > 0 ? totalError / activeTargetCount : 0;
+    if (statsRef.current) {
+        statsRef.current.meanError = activeTargetCount > 0 ? totalError / activeTargetCount : 0;
+        statsRef.current.meanSpeed = totalSpeed / count;
+        statsRef.current.fps = 1 / delta;
+    }
     
     meshRef.current.instanceMatrix.needsUpdate = true;
     if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
@@ -434,13 +513,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
         <MeshBasicMaterial color="#ffffff" transparent opacity={0.05} wireframe />
       </InstancedMesh>
 
-      {/* OUTLINE / GLOW: Higher opacity and Additive Blending */}
       <InstancedMesh ref={outlineRef} args={[undefined, undefined, params.particleCount]}>
         <SphereGeometry args={[0.42, 12, 12]} />
         <MeshBasicMaterial 
             color="#ffffff" 
             transparent 
-            opacity={0.6} // Increased opacity for stronger halo
+            opacity={0.6}
             side={THREE.BackSide} 
             blending={THREE.AdditiveBlending} 
             depthWrite={false}
@@ -448,7 +526,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
         />
       </InstancedMesh>
 
-      {/* CORE MESH: Standard Material for shiny dark surface */}
       <InstancedMesh ref={meshRef} args={[undefined, undefined, params.particleCount]}>
         <SphereGeometry args={[0.22, 16, 16]} /> 
         <MeshStandardMaterial 
@@ -461,7 +538,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
       </InstancedMesh>
 
       <LineSegments ref={linesRef} geometry={lineGeometry}>
-        {/* LINE GLOW: Increased opacity */}
         <LineBasicMaterial vertexColors={true} transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </LineSegments>
     </>
@@ -469,20 +545,19 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef }) => {
 };
 
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
-    // Enabled by default as per Sprint 0 pending improvement request
     return (
         <group visible={params.showRegions || true}>
             {/* Region 0 (Cyan) - Input A */}
             <Cylinder args={[18, 18, 10, 6]} position={[-20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.03} />
+                <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.1} />
             </Cylinder>
-             {/* Region 1 (Pink) - Input B */}
+            {/* Region 1 (Pink) - Input B */}
             <Cylinder args={[18, 18, 10, 6]} position={[20, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.03} />
+                <meshBasicMaterial color="#FF00AA" wireframe transparent opacity={0.1} />
             </Cylinder>
             {/* Region 2 (Gold) - Associative Center */}
             <Cylinder args={[15, 15, 20, 8]} position={[0, 0, 0]}>
-                <meshBasicMaterial color="#FFAA00" wireframe transparent opacity={0.03} />
+                <meshBasicMaterial color="#FFAA00" wireframe transparent opacity={0.1} />
             </Cylinder>
         </group>
     );
@@ -500,7 +575,9 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
   const [localText, setLocalText] = useState("");
   const [showHelp, setShowHelp] = useState(false);
   const [activeTab, setActiveTab] = useState<'auto' | 'manual'>('auto');
-  const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'chaos' | 'stabilize' | 'form' | 'learning' | 'save_dissolve' | 'loop_chaos'>('idle');
+  
+  // Revised Phases
+  const [autoRunPhase, setAutoRunPhase] = useState<'idle' | 'reset' | 'entropy' | 'observation' | 'encoding' | 'amnesia' | 'recall'>('idle');
   const [autoStatus, setAutoStatus] = useState("");
 
   const handleChange = (key: keyof SimulationParams, value: number | string | object | boolean) => {
@@ -514,56 +591,66 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
   const forgetCurrentMemory = () => handleChange('memoryResetTrigger', params.memoryResetTrigger + 1);
 
   const togglePlasticity = (active: boolean) => {
+      // NOTE: Damping handled in physics loop via isEncoding check
       if (active) setParams(prev => ({ 
           ...prev, 
           plasticity: 0.1, 
-          damping: 0.5, // Increased drag (lower value) to aid Crystallization (Phase 4)
           dataGravity: Math.max(prev.dataGravity, 0.5) 
       }));
-      else setParams(prev => ({ ...prev, plasticity: 0, damping: 0.85 }));
+      else setParams(prev => ({ ...prev, plasticity: 0 }));
   };
 
   const handleMemoryAction = (type: 'save' | 'load', slot: number) => {
     setParams(prev => ({ ...prev, memoryAction: { type, slot, triggerId: prev.memoryAction.triggerId + 1 } }));
   };
 
-  // Step-by-Step Experiment Controller
+  // Step-by-Step Experiment Controller (The Narrative Arc)
   useEffect(() => {
     if (autoRunPhase === 'idle') return;
 
     if (autoRunPhase === 'reset') {
-        setAutoStatus("SYSTEM_RESET: MEMORY CLEARED");
+        setAutoStatus("SYSTEM_RESET: MEMORY WIPED");
         setParams(DEFAULT_PARAMS);
         setLocalText("");
     } 
-    else if (autoRunPhase === 'chaos') {
-        setAutoStatus("PHASE 1: ENTROPY INJECTION (High Energy State)");
+    else if (autoRunPhase === 'entropy') {
+        setAutoStatus("PHASE 1: ENTROPY INJECTION (High Energy)");
+        // Chaos mode on, Text cleared
         setParams(prev => ({ ...prev, chaosMode: true, inputText: "" }));
     }
-    else if (autoRunPhase === 'stabilize') {
-        setAutoStatus("PHASE 2: FIELD STABILIZATION (Cooling)");
-        setParams(prev => ({ ...prev, chaosMode: false, inputText: "" }));
-    }
-    else if (autoRunPhase === 'form') {
+    else if (autoRunPhase === 'observation') {
         const word = "QUANTUM";
-        setAutoStatus(`PHASE 3: PATTERN EMERGENCE ("${word}")`);
+        setAutoStatus(`PHASE 2: OBSERVATION (Input: "${word}")`);
         setLocalText(word);
+        // Turn off chaos, input text
         setParams(prev => ({ ...prev, chaosMode: false, inputText: word, dataGravity: 0.4 }));
     }
-    else if (autoRunPhase === 'learning') {
-        setAutoStatus("PHASE 4: NEURAL CRYSTALLIZATION (Plasticity ON)");
-        togglePlasticity(true);
+    else if (autoRunPhase === 'encoding') {
+        setAutoStatus("PHASE 3: ENCODING (Plasticity ON -> Saving to Slot 1)");
+        togglePlasticity(true); // Turn on learning
+        
+        // Auto-save after a short delay (simulated here by just setting it, but in reality 
+        // the user will click "Next" after watching it crystallize)
+        // We trigger the save action immediately so it captures the crystallized form
+        setTimeout(() => handleMemoryAction('save', 1), 500); 
     }
-    else if (autoRunPhase === 'save_dissolve') {
-        setAutoStatus("PHASE 5: DISSOLUTION & RESET");
-        togglePlasticity(false);
-        setLocalText("");
-        setParams(prev => ({ ...prev, inputText: "" }));
+    else if (autoRunPhase === 'amnesia') {
+        setAutoStatus("PHASE 4: AMNESIA (Scrambling Input)");
+        togglePlasticity(false); // Stop learning
+        setLocalText(""); 
+        // Clear input text and enable Chaos to wash out the pattern
+        setParams(prev => ({ ...prev, inputText: "", chaosMode: true }));
+    }
+    else if (autoRunPhase === 'recall') {
+        setAutoStatus("PHASE 5: RECALL (Restoring from Matrix Slot 1)");
+        // Stop Chaos, Trigger Memory Load
+        setParams(prev => ({ ...prev, chaosMode: false }));
+        handleMemoryAction('load', 1);
     }
   }, [autoRunPhase]);
 
   const nextStep = () => {
-      const phases: typeof autoRunPhase[] = ['idle', 'reset', 'chaos', 'stabilize', 'form', 'learning', 'save_dissolve'];
+      const phases: typeof autoRunPhase[] = ['idle', 'reset', 'entropy', 'observation', 'encoding', 'amnesia', 'recall'];
       const currentIndex = phases.indexOf(autoRunPhase);
       const nextIndex = (currentIndex + 1) % phases.length;
       setAutoRunPhase(phases[nextIndex]);
@@ -573,11 +660,11 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
       switch(autoRunPhase) {
           case 'idle': return "START EXPERIMENT";
           case 'reset': return "INJECT CHAOS >>";
-          case 'chaos': return "STABILIZE FIELD >>";
-          case 'stabilize': return "SEED PATTERN >>";
-          case 'form': return "ENABLE LEARNING >>";
-          case 'learning': return "DISSOLVE >>";
-          case 'save_dissolve': return "FINISH EXPERIMENT";
+          case 'entropy': return "OBSERVE INPUT >>";
+          case 'observation': return "ENCODE PATTERN >>";
+          case 'encoding': return "INDUCE AMNESIA >>";
+          case 'amnesia': return "ATTEMPT RECALL >>";
+          case 'recall': return "FINISH >>";
           default: return "NEXT >>";
       }
   };
@@ -590,7 +677,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
   const labelClass = "text-[10px] text-cyan-500 font-bold uppercase tracking-widest mb-1";
 
   return (
-    <div className="absolute top-0 right-0 p-4 w-full md:w-80 h-full pointer-events-none flex flex-col items-end font-['Rajdhani']">
+    <div className="absolute top-0 right-0 p-4 w-full md:w-80 h-full pointer-events-none flex flex-col items-end font-['Rajdhani'] pb-8">
       {/* SCANLINES OVERLAY */}
       <div className="scanlines"></div>
 
@@ -729,9 +816,60 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef }) => 
   );
 };
 
+// --- Status Bar ---
+
+const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats> }> = ({ params, statsRef }) => {
+  const [stats, setStats] = useState({ meanError: 0, meanSpeed: 0, fps: 0 });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+        if (statsRef.current) {
+            setStats({
+                meanError: statsRef.current.meanError,
+                meanSpeed: statsRef.current.meanSpeed,
+                fps: statsRef.current.fps
+            });
+        }
+    }, 200); 
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="absolute bottom-0 left-0 w-full h-6 bg-cyan-950/90 border-t border-cyan-800 flex items-center px-3 text-[11px] font-mono text-cyan-400 gap-6 select-none z-50 backdrop-blur-sm">
+        <div className="flex items-center gap-2">
+            <span className="opacity-50">STATUS:</span>
+            <span className={stats.meanError < 0.5 ? "text-green-400" : "text-yellow-400"}>
+                {stats.meanError < 0.5 ? "STABLE" : "CONVERGING"}
+            </span>
+        </div>
+        <div className="flex items-center gap-2">
+            <span className="opacity-50">STABILITY:</span>
+            <span>{Math.round(Math.max(0, (1 - stats.meanSpeed * 5) * 100))}%</span>
+        </div>
+        <div className="flex items-center gap-2">
+            <span className="opacity-50">ENTROPY:</span>
+            <span>{params.chaosMode ? 'MAX' : 'NOMINAL'}</span>
+        </div>
+         <div className="flex items-center gap-2">
+            <span className="opacity-50">PARTICLES:</span>
+            <span>{params.particleCount}</span>
+        </div>
+        <div className="flex-1"></div>
+        <div className="flex items-center gap-2">
+            <span className="opacity-50">FPS:</span>
+            <span>{Math.round(stats.fps)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+            <span className="opacity-50">LEARNING %:</span>
+            <span>{params.plasticity > 0 ? (params.plasticity / 0.1 * 100).toFixed(0) + "%" : "0%"}</span>
+        </div>
+    </div>
+  )
+}
+
 // --- Main App ---
 
-const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.MutableRefObject<ParticleData> }> = ({ params, dataRef }) => {
+const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.MutableRefObject<ParticleData>, statsRef: React.MutableRefObject<SystemStats> }> = ({ params, dataRef, statsRef }) => {
   return (
     <Canvas camera={{ position: [0, 0, 35], fov: 45 }} gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
         <color attach="background" args={['#020205']} />
@@ -749,7 +887,7 @@ const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.Muta
         {/* Digital Floor Grid */}
         <Grid position={[0, -15, 0]} args={[100, 100]} cellSize={4} sectionSize={20} sectionColor="#06b6d4" cellColor="#1e293b" fadeDistance={60} />
 
-        <ParticleSystem params={params} dataRef={dataRef} />
+        <ParticleSystem params={params} dataRef={dataRef} statsRef={statsRef} />
         <RegionGuides params={params} />
         
         {/* Post Processing for the GLOW */}
@@ -767,6 +905,8 @@ const SimulationCanvas: React.FC<{ params: SimulationParams, dataRef: React.Muta
 
 function App() {
   const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
+  const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, fps: 0 });
+  
   const dataRef = useRef<ParticleData>({
     x: new Float32Array(0),
     v: new Float32Array(0),
@@ -785,9 +925,10 @@ function App() {
 
   return (
     <div className="w-full h-screen bg-black overflow-hidden relative font-sans select-none">
-      <SimulationCanvas params={params} dataRef={dataRef} />
+      <SimulationCanvas params={params} dataRef={dataRef} statsRef={statsRef} />
       
       <UIOverlay params={params} setParams={setParams} dataRef={dataRef} />
+      <StatusBar params={params} statsRef={statsRef} />
       
       {/* Futuristic Header */}
       <div className="absolute top-6 left-6 pointer-events-none hidden md:block mix-blend-screen">
