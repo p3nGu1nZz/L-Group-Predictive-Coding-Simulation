@@ -765,8 +765,9 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 // --- Matrix HUD ---
 const MatrixHUD: React.FC<{ 
     spatialRefs: React.MutableRefObject<{ neighborList: Int32Array; neighborCounts: Int32Array; }>; 
+    dataRef: React.MutableRefObject<ParticleData>;
     particleCount: number;
-}> = ({ spatialRefs, particleCount }) => {
+}> = ({ spatialRefs, dataRef, particleCount }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
@@ -775,8 +776,8 @@ const MatrixHUD: React.FC<{
         
         const updateInterval = setInterval(() => {
             const size = canvasRef.current?.width || 120;
-            // Use semi-transparent fill to create trails/accumulation
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            // Use semi-transparent fill to create trails/accumulation, lowered for persistence
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
             ctx.fillRect(0, 0, size, size);
 
             const p0 = 0;
@@ -795,25 +796,40 @@ const MatrixHUD: React.FC<{
 
             const scale = size / particleCount;
             const step = Math.max(1, Math.floor(particleCount / 300)); 
+            const matrix = dataRef.current.forwardMatrix;
 
             for(let i=0; i<particleCount; i+=step) {
                 const count = spatialRefs.current.neighborCounts[i];
                 const offset = i * 48; // maxNeighbors
                 const x = Math.floor(i * scale);
                 
+                // Show particle presence on diagonal
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(x, x, 1, 1);
-
-                if (i < particleCount * 0.25) ctx.fillStyle = '#06b6d4';
-                else if (i < particleCount * 0.5) ctx.fillStyle = '#ec4899';
-                else ctx.fillStyle = '#eab308';
 
                 for(let n=0; n<count; n++) {
                     const j = spatialRefs.current.neighborList[offset + n];
                     if (j < particleCount) {
                         const y = Math.floor(j * scale);
+
+                        // Visualizing forwardMatrix (Learned Weights)
+                        // J -> I (Row J, Col I) -> Pixel (x=i, y=j)
+                        const wJI = matrix[j * particleCount + i];
+                        if (wJI > 0.05) {
+                             ctx.fillStyle = `rgba(74, 222, 128, ${Math.min(1.0, wJI * 3.0)})`; // Green for learned
+                        } else {
+                             ctx.fillStyle = 'rgba(255, 255, 255, 0.03)'; // Faint for spatial only
+                        }
                         ctx.fillRect(x, y, 1, 1);
-                        ctx.fillRect(y, x, 1, 1); 
+
+                        // I -> J (Row I, Col J) -> Pixel (x=j, y=i) -> Pixel(y, x)
+                        const wIJ = matrix[i * particleCount + j];
+                        if (wIJ > 0.05) {
+                             ctx.fillStyle = `rgba(74, 222, 128, ${Math.min(1.0, wIJ * 3.0)})`;
+                        } else {
+                             ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+                        }
+                        ctx.fillRect(y, x, 1, 1);
                     }
                 }
             }
@@ -1783,7 +1799,7 @@ function App() {
                 </>
             )}
             <StatusBar params={params} statsRef={statsRef} mode={simulationMode} />
-            <MatrixHUD spatialRefs={spatialRefs} particleCount={params.particleCount} />
+            <MatrixHUD spatialRefs={spatialRefs} dataRef={dataRef} particleCount={params.particleCount} />
             <div className="absolute top-6 left-6 pointer-events-none hidden md:block mix-blend-screen">
                 <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-500 tracking-tighter" style={{ fontFamily: 'Rajdhani' }}>
                 PREDICTIVE_MORPHOLOGY
