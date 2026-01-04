@@ -8,12 +8,6 @@ export interface MemoryAction {
   triggerId: number; 
 }
 
-export interface MemorySnapshot {
-  x: Float32Array;
-  regionID: Uint8Array;
-  forwardMatrix?: Float32Array; 
-}
-
 export interface SimulationParams {
   particleCount: number;
   equilibriumDistance: number; 
@@ -52,7 +46,6 @@ export interface ParticleData {
   feedbackMatrix: Float32Array;
   delayedActivation: Float32Array;
   lastActiveTime: Float32Array;
-  hysteresisState: Uint8Array; // 0 = OFF, 1 = ON (Latching)
 }
 
 export interface SystemStats {
@@ -90,10 +83,6 @@ export const CONSTANTS = {
   // Optimization
   gridCellSize: 6.0,      // ~1.5x couplingDecay
   spatialRefreshRate: 10, // Frames
-
-  // Hysteresis (Schmitt Trigger)
-  activationThresholdHigh: 0.75, // Energy needed to turn ON
-  activationThresholdLow: 0.35,  // Energy needed to turn OFF (Latching gap)
 };
 
 export const DEFAULT_PARAMS: SimulationParams = {
