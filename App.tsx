@@ -1,9 +1,10 @@
+
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult, SystemStats } from './types';
+import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult, SystemStats, MemorySnapshot } from './types';
 import { EXPERIMENT_INFO } from './Info';
 
 // --- ParticleSystem ---
@@ -111,12 +112,6 @@ interface ParticleSystemProps {
   teacherFeedback: number; 
 }
 
-interface MemorySnapshot {
-  x: Float32Array;
-  regionID: Uint8Array;
-  forwardMatrix?: Float32Array; 
-}
-
 const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsRef, started, spatialRefs, teacherFeedback }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const outlineRef = useRef<THREE.InstancedMesh>(null); 
@@ -156,6 +151,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             feedbackMatrix: new Float32Array(memorySize),
             delayedActivation: new Float32Array(count),
             lastActiveTime: new Float32Array(count),
+            hysteresisState: new Uint8Array(count),
         };
         
         const phi = Math.PI * (3 - Math.sqrt(5)); 
@@ -312,7 +308,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
     const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength } = params;
     const count = params.particleCount;
-    const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime } = data.current;
+    const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime, hysteresisState } = data.current;
     
     if (x.length === 0) return;
 
@@ -407,16 +403,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       sumSinPhase += Math.sin(phase[i]);
       netSpin += spin[i];
 
-      // Update Activation States
-      if (!isTarget) activation[i] *= activationDecay;
-      else activation[i] = 1.0;
-      
-      delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
-
-      if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
-          lastActiveTime[i] = timeNow;
-      }
-
       // Base forces
       if (effectiveChaos) {
           fx += (Math.random() - 0.5) * 1.5;
@@ -510,7 +496,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                     
                     // A. Transfer Activation (Visual Ghosting)
                     // High signal makes the receiving particle glow
-                    activation[i] += signal * 0.3; 
+                    // activation[i] += signal * 0.3; // REMOVED: Managed via predictionLock now
                     
                     // B. Physical Locking
                     // Instead of a strong pull (which causes explosion), we add damping
@@ -610,6 +596,34 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       if (rSq > 2500) { x[idx3]*=0.99; x[idx3+1]*=0.99; x[idx3+2]*=0.99; }
       
       phase[i] += phaseSyncRate * phaseDelta + 0.05;
+
+      // --- HYSTERESIS & ACTIVATION LOGIC (SCHMITT TRIGGER) ---
+      const externalDrive = hasTarget[i] ? 1.0 : 0.0;
+      // Total Input = External Target + Internal Predictions
+      const totalInputEnergy = externalDrive + predictionLock * 2.0;
+
+      const currentHysteresis = hysteresisState[i];
+      let nextHysteresis = currentHysteresis;
+
+      if (currentHysteresis === 0) {
+          // Harder to turn ON (High Threshold)
+          if (totalInputEnergy > CONSTANTS.activationThresholdHigh) nextHysteresis = 1;
+      } else {
+          // Harder to turn OFF (Low Threshold) - Latching effect
+          if (totalInputEnergy < CONSTANTS.activationThresholdLow) nextHysteresis = 0;
+      }
+      hysteresisState[i] = nextHysteresis;
+
+      // Smoothly drive actual activation based on binary hysteresis state
+      const targetActivation = nextHysteresis === 1 ? 1.0 : 0.0;
+      activation[i] += (targetActivation - activation[i]) * 0.2;
+      
+      // Update delayed activation for next frame's learning
+      delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
+
+      if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
+          lastActiveTime[i] = timeNow;
+      }
 
       // Update Matrices
       TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
@@ -1410,9 +1424,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
       </div>
     </div>
   );
-};
-
-// --- Status Bar ---
+}
 
 const StatusBar: React.FC<{ params: SimulationParams, statsRef: React.MutableRefObject<SystemStats>, mode: string }> = ({ params, statsRef, mode }) => {
   const [stats, setStats] = useState<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0, phaseOrder: 0, spinOrder: 0, entropy: 0, patternMatch: 0 });
@@ -1716,6 +1728,7 @@ function App() {
     feedbackMatrix: new Float32Array(0),
     delayedActivation: new Float32Array(0),
     lastActiveTime: new Float32Array(0),
+    hysteresisState: new Uint8Array(0),
   });
 
   const handleTestComplete = (results: TestResult[]) => {
@@ -1750,6 +1763,7 @@ function App() {
       dataRef.current.activation.fill(0);
       dataRef.current.forwardMatrix.fill(0);
       dataRef.current.hasTarget.fill(0);
+      dataRef.current.hysteresisState.fill(0);
       
       // Clear Memory Bank
       memoryBank.current.clear();
