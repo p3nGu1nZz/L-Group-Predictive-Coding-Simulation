@@ -500,16 +500,29 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
               
               // Visualization of Destructive Interference (Collision) at the Gate Input
               if (rid === 2 && isInterference) {
-                 TEMP_COLOR.copy(DARK); // Blocked
-                 // High turbulence at the junction point (t near 0)
-                 if (t < 0.1) {
-                     const jitter = (Math.random()-0.5) * 0.5;
+                 // Collision Zone (Start of output pipe) where t is small
+                 if (t < 0.25) {
+                     const jitterIntensity = 1.0 - (t / 0.25);
+                     // Energetic chaotic motion
+                     const jitter = (Math.random()-0.5) * 1.5 * jitterIntensity;
                      fx += jitter; 
                      fy += jitter; 
-                     TEMP_COLOR.setRGB(0.2, 0.2, 0.2); // Faint spark
-                     TEMP_OBJ.scale.set(0.15, 0.15, 0.15);
+                     
+                     // Color: Energy sparks (Orange/Red) fading to dark
+                     // Simulates heat/entropy from cancellation
+                     const spark = Math.random() > 0.7 ? 1.0 : 0.0;
+                     TEMP_COLOR.setRGB(
+                        (0.8 * jitterIntensity) + spark, 
+                        (0.2 * jitterIntensity) + spark * 0.5, 
+                        (0.1 * jitterIntensity)
+                     );
+                     
+                     const scale = 0.15 * jitterIntensity + (spark * 0.15);
+                     TEMP_OBJ.scale.set(scale, scale, scale);
                  } else {
-                     TEMP_OBJ.scale.set(0.1, 0.1, 0.1);
+                     // Completely blocked/cancelled downstream
+                     TEMP_COLOR.setHex(0x050505); 
+                     TEMP_OBJ.scale.set(0.05, 0.05, 0.05);
                  }
               } else {
                  TEMP_COLOR.setHex(0x111111); // Idle dim path
@@ -898,6 +911,38 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 
 // --- UI Components ---
 
+const TruthTable: React.FC<{ a: boolean, b: boolean }> = ({ a, b }) => {
+    const rowClass = (ra: boolean, rb: boolean) => 
+        (a === ra && b === rb) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
+    
+    return (
+        <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+            <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table (XOR)</div>
+            <div className="grid grid-cols-3 gap-1 text-xs font-mono text-center">
+                <div className="text-gray-400 font-bold pb-1">A</div>
+                <div className="text-gray-400 font-bold pb-1">B</div>
+                <div className="text-gray-400 font-bold pb-1">OUT</div>
+
+                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+
+                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
+
+                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
+
+                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>0</div>
+            </div>
+        </div>
+    )
+}
+
 const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart }) => {
     return (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 text-white font-['Rajdhani']">
@@ -998,6 +1043,9 @@ const UIOverlay: React.FC<{
                              INPUT B: {params.logicState[1] ? "1" : "0"}
                          </button>
                     </div>
+
+                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} />
+
                     <div className="text-[10px] text-gray-400 font-mono text-center pt-2">
                         {(params.logicState[0] && params.logicState[1]) 
                             ? "PHASE CANCELLATION DETECTED" 
