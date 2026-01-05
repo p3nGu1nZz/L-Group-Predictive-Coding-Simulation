@@ -230,31 +230,70 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         if (params.gateType === 'HALF_ADDER') {
              
              if (params.circuitMode === 'MEMORY_CELL') {
-                 // MEMORY REGISTER LAYOUT
-                 // Region 0: Input Bus (Linear)
-                 // Region 1: Storage Loop (Circular)
-                 const halfSize = Math.floor(count / 2);
+                 // MEMORY REGISTER LAYOUT (Bit Loop)
+                 // Region 0: Data Bus (Linear)
+                 // Region 1: Storage Toroid (Circular)
+                 const busSize = Math.floor(count * 0.3);
                  for (let i = 0; i < count; i++) {
-                     let group = i < halfSize ? 0 : 1;
+                     let group = i < busSize ? 0 : 1;
                      data.current.regionID[i] = group;
-                     const t = (i % halfSize) / halfSize;
+                     const t = i / count;
                      
                      let cx=0, cy=0, cz=0;
                      if (group === 0) {
-                         // Input Bus
-                         cx = -40 + (35 * t);
-                         cy = 10 * Math.sin(t*10); // Data noise
-                         cz = 0;
+                         // Data Bus
+                         cx = -40 + (i / busSize) * 30;
+                         cy = 5; 
+                         cz = (Math.random()-0.5) * 2;
                      } else {
-                         // Storage Loop
-                         const theta = t * Math.PI * 2;
-                         const r = 15;
-                         cx = 20 + Math.cos(theta) * r;
+                         // Toroid Trap
+                         // Make it a thick ring
+                         const ringIdx = i - busSize;
+                         const ringTotal = count - busSize;
+                         const theta = (ringIdx / ringTotal) * Math.PI * 10; // Multiple windings
+                         const r = 12 + (Math.random() * 4);
+                         cx = 25 + Math.cos(theta) * r;
                          cy = Math.sin(theta) * r;
-                         cz = (Math.random() - 0.5) * 2;
+                         cz = (Math.random() - 0.5) * 5;
                      }
                      data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
                      data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
+                 }
+                 return;
+             }
+
+             if (params.circuitMode === 'DECODER_2_4') {
+                 // 2-to-4 DECODER LAYOUT
+                 // Region 0: Input A
+                 // Region 1: Input B
+                 // Region 2,3,4,5: Outputs D0, D1, D2, D3
+                 const inputSize = Math.floor(count * 0.3);
+                 const outputSize = count - inputSize;
+                 
+                 for (let i=0; i<count; i++) {
+                     let group = 0;
+                     if (i < inputSize / 2) group = 0; // A
+                     else if (i < inputSize) group = 1; // B
+                     else {
+                         const outIdx = i - inputSize;
+                         const quadrant = Math.floor(outIdx / (outputSize/4));
+                         group = 2 + quadrant; // 2, 3, 4, 5
+                     }
+                     data.current.regionID[i] = group;
+                     
+                     let cx=0, cy=0;
+                     if (group === 0) { cx = -40; cy = 15 + (Math.random()-0.5)*10; }
+                     else if (group === 1) { cx = -40; cy = -15 + (Math.random()-0.5)*10; }
+                     else {
+                         // Outputs fan out
+                         const q = group - 2; // 0..3
+                         cx = 30;
+                         cy = 30 - (q * 20); // 30, 10, -10, -30
+                         cx += (Math.random()-0.5)*5;
+                         cy += (Math.random()-0.5)*5;
+                     }
+                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = 0;
+                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = 0;
                  }
                  return;
              }
@@ -445,7 +484,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         // HALF ADDER LOGIC
         if (gateType === 'HALF_ADDER') {
              if (circuitMode === 'MEMORY_CELL') {
-                 // Nothing standard here, handled in loop
+                 // Handled in local logic
+             } else if (circuitMode === 'DECODER_2_4') {
+                 // Handled in local logic
              } else if (circuitMode === 'FULL_ADDER') {
                  // Sum = A XOR B XOR Cin
                  const xorAB = A_Active !== B_Active;
@@ -507,36 +548,59 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // --- MODE SPECIFIC PHYSICS ---
             if (circuitMode === 'MEMORY_CELL' && gateType === 'HALF_ADDER') {
                 // MEMORY REGISTER PHYSICS
-                if (rid === 0) { // Input Line
-                    // Just visualize "Input Pending"
-                    // If Write is happening (logicState[1] = Write Enable simulation maybe? No let's use the explicit buttons)
-                    // We visualize signal flow
+                if (rid === 0) { 
+                    // Input Line
                     localAmp = getPulse(0) * 0.5;
-                } else if (rid === 1) { // Storage Ring
+                } else if (rid === 1) { 
+                    // Storage Ring
                     if (params.memoryBit === 1) {
                         // High Energy Storage - Spin Effect
                         isGolden = true;
                         localAmp = 1.0;
                         
-                        // Add Tangential Velocity to create spin
-                        const r = 15;
-                        const centerX = 20; const centerY = 0;
+                        // Physics: Centripetal Force Trap
+                        const centerX = 25; const centerY = 0;
                         const dx = x[idx3] - centerX;
                         const dy = x[idx3+1] - centerY;
-                        
-                        // Tangent (-y, x)
-                        v[idx3] += -dy * 0.01;
-                        v[idx3+1] += dx * 0.01;
-                        
-                        // Keep on ring
                         const dist = Math.sqrt(dx*dx + dy*dy);
-                        const push = (15 - dist) * 0.1;
-                        v[idx3] += (dx/dist) * push;
-                        v[idx3+1] += (dy/dist) * push;
+                        const radius = 15;
                         
+                        // 1. Tangential Velocity (Spin)
+                        // Vector (-y, x)
+                        const spinSpeed = 0.5;
+                        v[idx3] += (-dy / dist) * spinSpeed;
+                        v[idx3+1] += (dx / dist) * spinSpeed;
+                        
+                        // 2. Centripetal Force (Keep on ring)
+                        const pull = (radius - dist) * 0.1;
+                        v[idx3] += (dx / dist) * pull;
+                        v[idx3+1] += (dy / dist) * pull;
+                        
+                        // 3. Z-Axis Containment (Flatten)
+                        v[idx3+2] -= x[idx3+2] * 0.1;
+
                     } else {
-                        // Cleared - Static
+                        // Cleared - Static, high friction
                         localAmp = 0;
+                    }
+                }
+            }
+            else if (circuitMode === 'DECODER_2_4' && gateType === 'HALF_ADDER') {
+                // 2-to-4 DECODER
+                if (rid === 0) { if (A_Active) localAmp = getPulse(0); } // A
+                else if (rid === 1) { if (B_Active) localAmp = getPulse(0); } // B
+                else {
+                    // Decoder Outputs
+                    const outIdx = rid - 2; // 0..3
+                    let active = false;
+                    if (outIdx === 0 && !A_Active && !B_Active) active = true;
+                    if (outIdx === 1 && !A_Active && B_Active) active = true;
+                    if (outIdx === 2 && A_Active && !B_Active) active = true;
+                    if (outIdx === 3 && A_Active && B_Active) active = true;
+                    
+                    if (active) {
+                        localAmp = getPulse(0) * 1.5;
+                        isGolden = true;
                     }
                 }
             }
@@ -618,6 +682,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             
             if (circuitMode === 'MEMORY_CELL') {
                 if (rid === 1 && params.memoryBit === 1) outputActive = true;
+            } else if (circuitMode === 'DECODER_2_4') {
+                if (rid >= 2) outputActive = true; // All output lines
             } else {
                 if (rid < (circuitMode === 'FULL_ADDER' ? 3 : 2)) inputActive = true;
                 else outputActive = true;
@@ -629,10 +695,19 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  if (isActive) v[idx3+1] += localAmp * 0.15;
                  activation[i] += (isActive ? 1.0 : 0.0 - activation[i]) * 0.1;
             } else {
-                 // Output Regions
+                 // Output Regions Logic for Flow
                  let targetAct = 0.0;
                  if (circuitMode === 'MEMORY_CELL') {
                      targetAct = (rid === 1 && params.memoryBit === 1) ? 1.0 : 0.0;
+                 } else if (circuitMode === 'DECODER_2_4') {
+                     // Check logic again for flow
+                     const outIdx = rid - 2;
+                     let active = false;
+                     if (outIdx === 0 && !A_Active && !B_Active) active = true;
+                     if (outIdx === 1 && !A_Active && B_Active) active = true;
+                     if (outIdx === 2 && A_Active && !B_Active) active = true;
+                     if (outIdx === 3 && A_Active && B_Active) active = true;
+                     targetAct = active ? 1.0 : 0.0;
                  } else if (gateType === 'HALF_ADDER') {
                      if (circuitMode === 'FULL_ADDER') {
                          if (rid === 3) targetAct = intendedSum ? 1.0 : 0.0;
@@ -649,8 +724,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  
                  // Flow visual
                  if (activation[i] > 0.1 && circuitMode !== 'MEMORY_CELL') {
-                     v[idx3] += localAmp * 0.2 * Math.cos(travel);
-                     v[idx3+1] += localAmp * 0.1;
+                     // Flow direction: +X
+                     v[idx3] += localAmp * 0.5; // Accelerate right
+                     v[idx3+1] += localAmp * 0.1; // Bobble
                  }
             }
             
@@ -659,16 +735,17 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  const dist = Math.abs(px); 
                  const damp = Math.max(0, 1.0 - dist / 15.0);
                  
-                 v[idx3+1] += Math.sin(timeNow * 20.0) * damp * 0.8;
-                 v[idx3+2] += Math.cos(timeNow * 30.0) * damp * 0.5; 
-                 v[idx3] += (Math.random() - 0.5) * 1.5 * damp; 
-                 v[idx3+1] += (Math.random() - 0.5) * 1.5 * damp;
+                 // Violent localized vibration without flow
+                 v[idx3+1] += Math.sin(timeNow * 50.0) * damp * 2.0;
+                 v[idx3+2] += Math.cos(timeNow * 40.0) * damp * 2.0; 
+                 v[idx3] += (Math.random() - 0.5) * 5.0 * damp; 
             }
 
             // Damping (Special case for Memory Register: No Damping when active!)
             let dampingFactor = 0.8;
-            if (circuitMode === 'MEMORY_CELL' && rid === 1 && params.memoryBit === 1) {
-                dampingFactor = 0.99; // Inertia conservation for trap loop
+            if (circuitMode === 'MEMORY_CELL' && rid === 1) {
+                if (params.memoryBit === 1) dampingFactor = 0.98; // Low friction for storage
+                else dampingFactor = 0.5; // High friction for clear
             }
             
             v[idx3] *= dampingFactor;
@@ -690,27 +767,31 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // Coloring
             if (turbulence > 0.5) {
                 const noise = Math.random();
-                if (noise > 0.92) TEMP_COLOR.setHex(0xFFFFFF); // White Spark
-                else if (noise > 0.6) TEMP_COLOR.setHex(0xFF3300); // Neon Orange
-                else if (noise > 0.3) TEMP_COLOR.setHex(0xFF0000); // Pure Red
-                else TEMP_COLOR.setHex(0x220000); // Void Dark Red
+                // Dark Matter Effect
+                if (noise > 0.95) TEMP_COLOR.setHex(0x000000); 
+                else if (noise > 0.8) TEMP_COLOR.setHex(0x330000); 
+                else TEMP_COLOR.setHex(0x111111);
+                
+                // Occasional sparks
+                if (Math.random() > 0.98) TEMP_COLOR.setHex(0xFF0000); 
+
             } else if (activation[i] > 0.1) {
                 const brightness = activation[i];
                 const pulseBoost = localAmp * 0.8; 
                 const t = Math.min(1.0, brightness + pulseBoost);
                 
-                if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
-                else if (rid === 1) {
-                    if (circuitMode === 'MEMORY_CELL') {
-                        TEMP_COLOR.setHex(0xFFD700); // Gold for memory
-                        TEMP_COLOR.lerp(WHITE, localAmp);
-                    } else {
-                        TEMP_COLOR.setRGB(t, 0, t); // Magenta
-                    }
+                if (circuitMode === 'MEMORY_CELL' && rid === 1) {
+                     // Memory Plasma Color
+                     TEMP_COLOR.setHex(0xFFAA00);
+                     TEMP_COLOR.lerp(WHITE, localAmp);
                 }
-                else if (rid >= 2) {
+                else if (rid < 2) {
+                    if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
+                    else TEMP_COLOR.setRGB(t, 0, t); // Magenta
+                }
+                else {
                     if (isGolden) {
-                         // Bias / Carry Flow (Gold)
+                         // Output Signal
                          TEMP_COLOR.setHex(0xFFD700); 
                          TEMP_COLOR.lerp(WHITE, localAmp * 0.6);
                     } else if (gateType === 'HALF_ADDER') {
@@ -733,7 +814,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             
             if(outlineRef.current) {
                 outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
-                if (turbulence > 0.5) TEMP_EMISSIVE.setRGB(2, 0.5, 0);
+                if (turbulence > 0.5) TEMP_EMISSIVE.setRGB(0.2, 0, 0);
                 else TEMP_EMISSIVE.copy(TEMP_COLOR).multiplyScalar(1.5 + localAmp * 2.0);
                 outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
             }
@@ -1058,15 +1139,38 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
      if (gateType === 'HALF_ADDER') {
          if (circuitMode === 'MEMORY_CELL') {
              // Memory Latch (Straight line to Circle)
-             shape.push([new THREE.Vector3(-40, 0, 0), new THREE.Vector3(5, 0, 0)]);
+             shape.push([new THREE.Vector3(-40, 5, 0), new THREE.Vector3(5, 5, 0)]);
              
              // Circle approximation
              const circle = [];
              for(let i=0; i<=32; i++) {
                  const theta = (i/32) * Math.PI * 2;
-                 circle.push(new THREE.Vector3(20 + Math.cos(theta)*15, Math.sin(theta)*15, 0));
+                 circle.push(new THREE.Vector3(25 + Math.cos(theta)*15, Math.sin(theta)*15, 0));
              }
              shape.push(circle);
+             return shape;
+         }
+
+         if (circuitMode === 'DECODER_2_4') {
+             // A, B Inputs
+             shape.push([new THREE.Vector3(-40, 15, 0), new THREE.Vector3(-10, 15, 0)]);
+             shape.push([new THREE.Vector3(-40, -15, 0), new THREE.Vector3(-10, -15, 0)]);
+             
+             // Box
+             const box = [];
+             box.push(new THREE.Vector3(-10, 35, 0));
+             box.push(new THREE.Vector3(10, 35, 0));
+             box.push(new THREE.Vector3(10, -35, 0));
+             box.push(new THREE.Vector3(-10, -35, 0));
+             box.push(new THREE.Vector3(-10, 35, 0));
+             shape.push(box);
+             
+             // Outputs
+             shape.push([new THREE.Vector3(10, 30, 0), new THREE.Vector3(30, 30, 0)]);
+             shape.push([new THREE.Vector3(10, 10, 0), new THREE.Vector3(30, 10, 0)]);
+             shape.push([new THREE.Vector3(10, -10, 0), new THREE.Vector3(30, -10, 0)]);
+             shape.push([new THREE.Vector3(10, -30, 0), new THREE.Vector3(30, -30, 0)]);
+             
              return shape;
          }
 
@@ -1128,7 +1232,18 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
           {gateType === 'HALF_ADDER' && circuitMode === 'MEMORY_CELL' && (
               <>
                  <Text position={[-42, 5, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">DATA IN</Text>
-                 <Text position={[20, 0, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">1-BIT STORAGE</Text>
+                 <Text position={[25, 0, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">MAGNETIC TRAP</Text>
+              </>
+          )}
+          {gateType === 'HALF_ADDER' && circuitMode === 'DECODER_2_4' && (
+              <>
+                 <Text position={[-42, 15, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
+                 <Text position={[-42, -15, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
+                 <Text position={[0, 0, 0]} fontSize={2} color="#888888" anchorX="center" anchorY="middle">2-TO-4 DECODER</Text>
+                 <Text position={[32, 30, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">00</Text>
+                 <Text position={[32, 10, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">01</Text>
+                 <Text position={[32, -10, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">10</Text>
+                 <Text position={[32, -30, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">11</Text>
               </>
           )}
           {gateType === 'HALF_ADDER' && circuitMode === 'FULL_ADDER' && (
@@ -1206,10 +1321,35 @@ const TruthTable: React.FC<{ a: boolean, b: boolean, c: boolean, gateType: 'AND'
     if (gateType === 'HALF_ADDER') {
         if (circuitMode === 'MEMORY_CELL') return null; // No truth table for Register
 
+        if (circuitMode === 'DECODER_2_4') {
+            const isActive = (idx: number) => {
+                if (idx === 0 && !a && !b) return true;
+                if (idx === 1 && !a && b) return true;
+                if (idx === 2 && a && !b) return true;
+                if (idx === 3 && a && b) return true;
+                return false;
+            };
+            return (
+                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                     <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">2-to-4 Decoder</div>
+                     <div className="grid grid-cols-6 gap-1 text-[10px] font-mono text-center">
+                        <div className="text-gray-400 font-bold pb-1">A</div>
+                        <div className="text-gray-400 font-bold pb-1">B</div>
+                        <div className="text-yellow-500 font-bold pb-1">D0</div>
+                        <div className="text-yellow-500 font-bold pb-1">D1</div>
+                        <div className="text-yellow-500 font-bold pb-1">D2</div>
+                        <div className="text-yellow-500 font-bold pb-1">D3</div>
+
+                        <div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>1</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div>
+                        <div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>1</div><div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>1</div><div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>0</div>
+                        <div className={rowClass(true, false)}>1</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>1</div><div className={rowClass(true, false)}>0</div>
+                        <div className={rowClass(true, true)}>1</div><div className={rowClass(true, true)}>1</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>1</div>
+                     </div>
+                 </div>
+            )
+        }
+
         if (circuitMode === 'FULL_ADDER') {
-            const getSum = (vA: boolean, vB: boolean, vC: boolean) => ((vA !== vB) !== vC) ? 1 : 0;
-            const getCarry = (vA: boolean, vB: boolean, vC: boolean) => ((vA && vB) || (vC && (vA !== vB))) ? 1 : 0;
-            
             return (
                  <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
                      <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Full Adder Truth Table</div>
@@ -1443,10 +1583,11 @@ const UIOverlay: React.FC<{
                     {mode === 'adder' && (
                         <>
                         <div className="text-xs text-orange-500 font-bold tracking-widest border-b border-orange-900 pb-1">COMPONENT TYPE</div>
-                        <div className="grid grid-cols-3 gap-1 mb-3">
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'HALF_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'HALF_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>HALF ADDER</button>
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'FULL_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'FULL_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>FULL ADDER</button>
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'MEMORY_CELL', loopActive: false, memoryBit: 0}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'MEMORY_CELL' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>REGISTER</button>
+                        <div className="grid grid-cols-4 gap-1 mb-3">
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'HALF_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'HALF_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>HALF ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'FULL_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'FULL_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>FULL ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'DECODER_2_4', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'DECODER_2_4' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>DECODER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'MEMORY_CELL', loopActive: false, memoryBit: 0}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'MEMORY_CELL' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>REGISTER</button>
                         </div>
                         </>
                     )}
@@ -1527,7 +1668,7 @@ const UIOverlay: React.FC<{
                              </button>
                              {params.loopActive && (
                                  <div className="text-[9px] font-mono text-cyan-400 text-center mt-1">
-                                     SEQUENCE STATUS: {params.circuitMode === 'HALF_ADDER' ? `Cycle ${(params.logicState[0]?2:0) + (params.logicState[1]?1:0)}/4` : 'Cycling 8 States...'}
+                                     SEQUENCE STATUS: {params.circuitMode === 'HALF_ADDER' || params.circuitMode === 'DECODER_2_4' ? `Cycle ${(params.logicState[0]?2:0) + (params.logicState[1]?1:0)}/4` : 'Cycling 8 States...'}
                                  </div>
                              )}
                         </div>
@@ -1539,7 +1680,7 @@ const UIOverlay: React.FC<{
                     <div className="text-[10px] text-gray-400 font-mono text-center pt-2 h-4">
                         {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHYSICS: DESTRUCTIVE INTERFERENCE" : ""}
                         {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "PHYSICS: CONSTRUCTIVE WAVE SUM" : ""}
-                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 1 ? "PHYSICS: UNDAMPED PARTICLE TRAP (LATCH)" : ""}
+                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 1 ? "PHYSICS: UNDAMPED PLASMA TOROID (LATCH)" : ""}
                         {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 0 ? "PHYSICS: HIGH FRICTION (CLEAR)" : ""}
                     </div>
                 </div>
@@ -1701,7 +1842,7 @@ const App: React.FC = () => {
                  cycle = (cycle + 1) % 8;
             }
             else {
-                 // Half Adder Loop: Iterate 4 states (00, 01, 10, 11)
+                 // Half Adder & Decoder Loop: Iterate 4 states (00, 01, 10, 11)
                  setParams(current => {
                      const a = (cycle & 2) !== 0;
                      const b = (cycle & 1) !== 0;

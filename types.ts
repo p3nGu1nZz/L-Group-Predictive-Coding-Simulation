@@ -39,7 +39,7 @@ export interface SimulationParams {
   // Experiment E Loop & Modes
   loopActive: boolean;
   accumulator: number;
-  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'MEMORY_CELL'; // New Sub-modes for E
+  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'MEMORY_CELL' | 'DECODER_2_4'; // Added Decoder
   memoryBit: number; // 0 or 1 for the Register
 }
 
