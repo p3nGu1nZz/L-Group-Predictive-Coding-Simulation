@@ -1155,20 +1155,23 @@ const UIOverlay: React.FC<UIOverlayProps> = ({ params, setParams, dataRef, simul
   // --- PAPER DEMO SETUP ---
   useEffect(() => {
       if (simulationMode === 'paper') {
-          // Initialize for L-Group Demo
+          // Initialize for L-Group Demo / Quantum Logic
           setParams(prev => ({ 
               ...prev, 
               usePaperPhysics: true, 
               showRegions: false, 
               inputText: "", 
-              particleCount: 1500, // Higher count for wave effects
-              couplingDecay: 6.0,
-              spinCouplingStrength: 0.5,
-              phaseCouplingStrength: 1.0,
+              particleCount: 1600, // Higher count for wave effects
+              couplingDecay: 8.0,  // Longer range interactions
+              // TUNED PARAMETERS FOR DESTRUCTIVE INTERFERENCE
+              spinCouplingStrength: 0.95, // High sensitivity to spin
+              phaseCouplingStrength: 2.0, // High sensitivity to phase
+              phaseSyncRate: 0.12,        // Faster sync
               chaosMode: false
           }));
           addLog("L-GROUP FRAMEWORK INITIALIZED.");
           addLog("SPIN STATES: RED (+1/2), BLUE (-1/2)");
+          addLog("OPTIMIZED FOR INTERFERENCE PATTERNS.");
       }
   }, [simulationMode]);
 
