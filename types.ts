@@ -34,6 +34,7 @@ export interface SimulationParams {
   // Logic Experiment
   logicMode: boolean;
   logicState: [boolean, boolean]; // [Input A, Input B]
+  gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT'; // Logic Circuit Mode
 }
 
 export interface ParticleData {
@@ -128,5 +129,6 @@ export const DEFAULT_PARAMS: SimulationParams = {
   phaseCouplingStrength: 1.0,
   
   logicMode: false,
-  logicState: [false, false]
+  logicState: [false, false],
+  gateType: 'XOR'
 };

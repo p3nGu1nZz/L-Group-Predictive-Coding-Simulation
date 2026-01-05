@@ -23,6 +23,7 @@ const GOLD = new THREE.Color("#FFD700");
 const RED = new THREE.Color("#FF0000");
 const CYAN = new THREE.Color("#00FFFF");
 const MAGENTA = new THREE.Color("#FF00FF");
+const GREEN = new THREE.Color("#00FF00");
 const DARK = new THREE.Color("#111111");
 
 // Paper Colors for Spin
@@ -357,7 +358,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     else if (teacherFeedback === -1) systemTemperature = 1.0; // Agitate
     else systemTemperature = 0.05; // Ambient
 
-    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength, logicMode, logicState } = params;
+    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength, logicMode, logicState, gateType } = params;
     const count = params.particleCount;
     const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime, hysteresisState } = data.current;
     
@@ -453,40 +454,50 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           let isActive = false;
           let flowPhase = 0;
 
-          // Interference Calculation for Output Channel
-          const inputA = logicState[0] ? 1.0 : 0.0;
-          const inputB = logicState[1] ? -1.0 : 0.0; // Note negative phase for B
-          const combined = inputA + inputB; 
-          const isInterference = (inputA !== 0 && inputB !== 0);
-          const outputActive = Math.abs(combined) > 0.5;
+          // LOGIC COMPUTATION
+          const vA = logicState[0];
+          const vB = logicState[1];
+          let expectedOut = false;
+
+          switch(gateType) {
+              case 'AND': expectedOut = (vA && vB); break;
+              case 'OR':  expectedOut = (vA || vB); break;
+              case 'XOR': expectedOut = (vA !== vB); break;
+              case 'NAND': expectedOut = !(vA && vB); break;
+              case 'NOR': expectedOut = !(vA || vB); break;
+              case 'XNOR': expectedOut = (vA === vB); break;
+              case 'NOT': expectedOut = !vA; break;
+          }
 
           if (rid === 0) { // Input A
-              isActive = logicState[0];
+              isActive = vA;
               flowPhase = 1.0;
           } else if (rid === 1) { // Input B
-              isActive = logicState[1];
-              flowPhase = -1.0;
+              if (gateType === 'NOT') {
+                  isActive = false; // Disable Input B for NOT gate
+              } else {
+                  isActive = vB;
+                  flowPhase = (gateType === 'XOR') ? -1.0 : 1.0; // Use -1 for XOR interference
+              }
           } else if (rid === 2) { // Output
-              isActive = outputActive;
-              flowPhase = combined; 
+              isActive = expectedOut;
+              flowPhase = expectedOut ? 1.0 : 0.0;
           }
 
           if (isActive) {
               activation[i] = 1.0;
               // Distinct "Pulse" Packet Visualization
-              // Create discrete packets moving along the wire
-              const pulseFreq = 3.0; // Frequency of packets
-              const pulseSpeed = 5.0; // Speed of packets
+              const pulseFreq = 3.0; 
+              const pulseSpeed = 5.0; 
               const phaseOffset = t * 20.0 - timeNow * pulseSpeed;
               const pulse = Math.sin(phaseOffset);
               
-              // Sharpen the pulse to look like a digital signal
-              const sharpPulse = Math.pow((pulse + 1.0) * 0.5, 8.0); // High power makes peaks narrow
+              const sharpPulse = Math.pow((pulse + 1.0) * 0.5, 8.0); 
 
               // Apply Flow Color
-              if (flowPhase > 0.5) TEMP_COLOR.copy(CYAN);
-              else if (flowPhase < -0.5) TEMP_COLOR.copy(MAGENTA);
-              else TEMP_COLOR.copy(DARK); 
+              if (gateType === 'XOR' && rid===1) TEMP_COLOR.copy(MAGENTA);
+              else if (rid===2 && expectedOut) TEMP_COLOR.copy(GREEN); // Success Output
+              else TEMP_COLOR.copy(CYAN); 
 
               // Add wave pulse to color
               TEMP_COLOR.lerp(WHITE, sharpPulse);
@@ -498,8 +509,13 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           } else {
               activation[i] *= 0.9; // Fast decay
               
-              // Visualization of Destructive Interference (Collision) at the Gate Input
-              if (rid === 2 && isInterference) {
+              // Visualization of Logic Failures / Blocks
+              let isBlocked = false;
+              if (rid === 2 && !expectedOut) {
+                   isBlocked = true; // Any time output is meant to be 0, visualize it as blocked/interfered
+              }
+
+              if (isBlocked) {
                  // Collision Zone (Start of output pipe) where t is small
                  if (t < 0.25) {
                      const jitterIntensity = 1.0 - (t / 0.25);
@@ -832,7 +848,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   );
 };
 
-const LogicGateOverlay: React.FC = () => {
+const LogicGateOverlay: React.FC<{ gateType: string }> = ({ gateType }) => {
   const points = useMemo(() => {
      // XOR Gate Shape coordinates
      // Center approx (-5, 0)
@@ -888,14 +904,14 @@ const LogicGateOverlay: React.FC = () => {
           <Text position={[-30, 18, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">INPUT A</Text>
           <Text position={[-30, -18, 0]} fontSize={2} color="#FF00FF" anchorX="center" anchorY="middle">INPUT B</Text>
           <Text position={[40, 0, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle">OUTPUT</Text>
-          <Text position={[-2, 12, 0]} fontSize={1.5} color="gray" anchorX="center" anchorY="middle">XOR GATE</Text>
+          <Text position={[-2, 12, 0]} fontSize={1.5} color="gray" anchorX="center" anchorY="middle">{gateType} GATE</Text>
       </group>
   )
 }
 
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
     if (!params.showRegions && !params.logicMode) return null;
-    if (params.logicMode) return <LogicGateOverlay />;
+    if (params.logicMode) return <LogicGateOverlay gateType={params.gateType} />;
     
     return (
         <group>
@@ -911,13 +927,51 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 
 // --- UI Components ---
 
-const TruthTable: React.FC<{ a: boolean, b: boolean }> = ({ a, b }) => {
-    const rowClass = (ra: boolean, rb: boolean) => 
-        (a === ra && b === rb) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
+const TruthTable: React.FC<{ a: boolean, b: boolean, gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT' }> = ({ a, b, gateType }) => {
+    const rowClass = (ra: boolean, rb: boolean) => {
+        // For NOT gate, we only care about 'a' matching
+        if (gateType === 'NOT') {
+            return (a === ra) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
+        }
+        return (a === ra && b === rb) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
+    }
     
+    // Logic Helpers
+    const getOut = (vA: boolean, vB: boolean) => {
+        switch(gateType) {
+            case 'AND': return (vA && vB) ? 1 : 0;
+            case 'OR': return (vA || vB) ? 1 : 0;
+            case 'XOR': return (vA !== vB) ? 1 : 0;
+            case 'NAND': return !(vA && vB) ? 1 : 0;
+            case 'NOR': return !(vA || vB) ? 1 : 0;
+            case 'XNOR': return (vA === vB) ? 1 : 0;
+            case 'NOT': return (!vA) ? 1 : 0;
+            default: return 0;
+        }
+    }
+
+    // Custom Layout for NOT gate (2 rows only)
+    if (gateType === 'NOT') {
+         return (
+            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table (NOT)</div>
+                <div className="grid grid-cols-2 gap-1 text-xs font-mono text-center">
+                    <div className="text-gray-400 font-bold pb-1">IN</div>
+                    <div className="text-gray-400 font-bold pb-1">OUT</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getOut(false, false)}</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getOut(true, false)}</div>
+                </div>
+            </div>
+        )
+    }
+
     return (
         <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-            <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table (XOR)</div>
+            <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table ({gateType})</div>
             <div className="grid grid-cols-3 gap-1 text-xs font-mono text-center">
                 <div className="text-gray-400 font-bold pb-1">A</div>
                 <div className="text-gray-400 font-bold pb-1">B</div>
@@ -925,19 +979,19 @@ const TruthTable: React.FC<{ a: boolean, b: boolean }> = ({ a, b }) => {
 
                 <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
                 <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getOut(false, false)}</div>
 
                 <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>0</div>
                 <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getOut(false, true)}</div>
 
                 <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
                 <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getOut(true, false)}</div>
 
                 <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
                 <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>0</div>
+                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getOut(true, true)}</div>
             </div>
         </div>
     )
@@ -982,8 +1036,8 @@ const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart })
 
                     <button onClick={() => onStart('logic')} className="text-left p-4 border border-gray-700 hover:border-red-400 hover:bg-red-900/20 transition-all group">
                         <div className="text-red-400 font-bold tracking-widest text-xs mb-1 group-hover:text-red-300">EXPERIMENT D</div>
-                        <div className="text-xl font-bold text-white">LOGIC GATE (XOR)</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Destructive interference computation.</div>
+                        <div className="text-xl font-bold text-white">LOGIC CIRCUITS</div>
+                        <div className="text-xs text-gray-500 mt-2 font-mono">Quantum Gates: XOR, AND, OR, NAND...</div>
                     </button>
                 </div>
             </div>
@@ -1031,7 +1085,31 @@ const UIOverlay: React.FC<{
         if (mode === 'logic') {
             return (
                 <div className="mt-4 space-y-2">
-                    <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">QUANTUM GATES (XOR)</div>
+                    <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">GATE TYPE SELECTION</div>
+                    <div className="grid grid-cols-4 gap-1 mb-3">
+                         {['AND', 'OR', 'XOR', 'NOT'].map((g) => (
+                             <button
+                                key={g}
+                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false]}))}
+                                className={`py-2 text-[10px] font-bold border transition-all ${params.gateType === g ? 'bg-red-500 text-black border-red-400' : 'bg-black text-gray-500 border-gray-700 hover:border-gray-500'}`}
+                             >
+                                 {g}
+                             </button>
+                         ))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 mb-3">
+                         {['NAND', 'NOR', 'XNOR'].map((g) => (
+                             <button
+                                key={g}
+                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false]}))}
+                                className={`py-2 text-[10px] font-bold border transition-all ${params.gateType === g ? 'bg-red-500 text-black border-red-400' : 'bg-black text-gray-500 border-gray-700 hover:border-gray-500'}`}
+                             >
+                                 {g}
+                             </button>
+                         ))}
+                    </div>
+
+                    <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">CIRCUIT CONTROLS</div>
                     <div className="grid grid-cols-2 gap-2">
                          <button 
                             onClick={() => setParams((p: any) => ({...p, logicState: [!p.logicState[0], p.logicState[1]]}))}
@@ -1039,23 +1117,29 @@ const UIOverlay: React.FC<{
                          >
                              INPUT A: {params.logicState[0] ? "1" : "0"}
                          </button>
-                         <button 
-                            onClick={() => setParams((p: any) => ({...p, logicState: [p.logicState[0], !p.logicState[1]]}))}
-                            className={`p-3 text-xs font-bold border transition-all ${params.logicState[1] ? 'bg-pink-500 text-black border-pink-400' : 'bg-black text-gray-500 border-gray-700'}`}
-                         >
-                             INPUT B: {params.logicState[1] ? "1" : "0"}
-                         </button>
+                         
+                         {params.gateType !== 'NOT' && (
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, logicState: [p.logicState[0], !p.logicState[1]]}))}
+                                className={`p-3 text-xs font-bold border transition-all ${params.logicState[1] ? 'bg-pink-500 text-black border-pink-400' : 'bg-black text-gray-500 border-gray-700'}`}
+                             >
+                                 INPUT B: {params.logicState[1] ? "1" : "0"}
+                             </button>
+                         )}
+                         {params.gateType === 'NOT' && (
+                              <div className="p-3 text-xs font-bold border border-gray-800 text-gray-700 bg-black italic">
+                                  N/A
+                              </div>
+                         )}
                     </div>
 
-                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} />
+                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} gateType={params.gateType} />
 
-                    <div className="text-[10px] text-gray-400 font-mono text-center pt-2">
-                        {(params.logicState[0] && params.logicState[1]) 
-                            ? "PHASE CANCELLATION DETECTED" 
-                            : (params.logicState[0] || params.logicState[1]) 
-                                ? "SIGNAL FLOW ACTIVE" 
-                                : "AWAITING SIGNAL"
-                        }
+                    <div className="text-[10px] text-gray-400 font-mono text-center pt-2 h-4">
+                        {/* Dynamic Status Text based on Gate */}
+                        {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHASE CANCELLATION DETECTED" : ""}
+                        {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "CONSTRUCTIVE SUMMATION" : ""}
+                        {(params.gateType === 'NAND' || params.gateType === 'NOR') && !params.logicState[0] && !params.logicState[1] ? "BIAS FLOW ACTIVE" : ""}
                     </div>
 
                      {/* Test Runner UI */}
@@ -1065,7 +1149,7 @@ const UIOverlay: React.FC<{
                             disabled={isTesting}
                             className={`w-full py-2 text-xs font-bold border ${isTesting ? 'border-gray-600 text-gray-500 cursor-not-allowed' : 'border-cyan-500 text-cyan-400 hover:bg-cyan-900/40'}`}
                          >
-                            {isTesting ? "RUNNING DIAGNOSTICS..." : "RUN AUTOMATED TEST SUITE"}
+                            {isTesting ? "RUNNING DIAGNOSTICS..." : `TEST ${params.gateType} LOGIC`}
                          </button>
                          
                          {testResults.length > 0 && (
@@ -1245,17 +1329,41 @@ const App: React.FC = () => {
         // Capture count from current params to ensure consistency
         const count = params.particleCount;
         const channelSize = Math.floor(count / 3);
+        const currentGate = params.gateType;
+
+        const getExpected = (a: boolean, b: boolean) => {
+            switch(currentGate) {
+                case 'AND': return (a && b) ? 1.0 : 0.0;
+                case 'OR': return (a || b) ? 1.0 : 0.0;
+                case 'XOR': return (a !== b) ? 1.0 : 0.0;
+                case 'NAND': return !(a && b) ? 1.0 : 0.0;
+                case 'NOR': return !(a || b) ? 1.0 : 0.0;
+                case 'XNOR': return (a === b) ? 1.0 : 0.0;
+                case 'NOT': return (!a) ? 1.0 : 0.0;
+                default: return 0.0;
+            }
+        }
         
-        const cases = [
-            { a: false, b: false, expected: 0.0, label: "INPUT: 00" },
-            { a: true, b: false, expected: 1.0, label: "INPUT: 10" },
-            { a: false, b: true, expected: 1.0, label: "INPUT: 01" },
-            { a: true, b: true, expected: 0.0, label: "INPUT: 11 (XOR)" }
+        let cases = [
+            { a: false, b: false, label: "INPUT: 00" },
+            { a: true, b: false, label: "INPUT: 10" },
+            { a: false, b: true, label: "INPUT: 01" },
+            { a: true, b: true, label: "INPUT: 11" }
         ];
+
+        // For NOT gate, we only need to test 0 and 1 on Input A
+        if (currentGate === 'NOT') {
+             cases = [
+                 { a: false, b: false, label: "INPUT: 0" },
+                 { a: true, b: false, label: "INPUT: 1" }
+             ];
+        }
     
         const newResults: TestResult[] = [];
     
         for (const c of cases) {
+            const expectedVal = getExpected(c.a, c.b);
+
             // 1. Set Input
             setParams(p => ({ ...p, logicState: [c.a, c.b] }));
             
@@ -1275,7 +1383,7 @@ const App: React.FC = () => {
             
             const avg = pCount > 0 ? totalAct / pCount : 0;
             // Threshold for pass: Expected 1.0 (allow >0.8), Expected 0.0 (allow <0.2)
-            const passed = Math.abs(avg - c.expected) < 0.25;
+            const passed = Math.abs(avg - expectedVal) < 0.25;
     
             newResults.push({
                 testName: c.label,
