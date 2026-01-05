@@ -39,6 +39,17 @@ const DyT = (x: number, alpha2: number, alpha3: number) => {
     return alpha2 * Math.tanh(alpha3 * x);
 };
 
+// Helper for Primality Test
+const isPrimeNumber = (num: number) => {
+    if (num <= 1) return false; // 0 and 1 are not prime
+    if (num <= 3) return true;  // 2 and 3 are prime
+    if (num % 2 === 0 || num % 3 === 0) return false;
+    for (let i = 5; i * i <= num; i += 6) {
+        if (num % i === 0 || num % (i + 2) === 0) return false;
+    }
+    return true;
+}
+
 // Adaptive Text Sampling
 const textToPoints = (text: string, targetCount: number): { positions: Float32Array, count: number } => {
   if (!text) return { positions: new Float32Array(0), count: 0 };
@@ -232,11 +243,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
              if (params.circuitMode === 'PRIME_CHECKER') {
                  // COMPLEX CIRCUIT: PRIME CHECKER
                  // Regions:
-                 // 0: Register Bank (Left)
+                 // 0: Register Bank (Left) - Expanded to 8 bits for visual
                  // 1: Logic Mesh (Center)
                  // 2: Result Latch (Right)
-                 const regCount = Math.floor(count * 0.2);
-                 const logicCount = Math.floor(count * 0.5);
+                 const regCount = Math.floor(count * 0.3); // Increased for 8 bits
+                 const logicCount = Math.floor(count * 0.4);
                  
                  for(let i=0; i<count; i++) {
                      let group = 0;
@@ -249,13 +260,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                      let cx=0, cy=0, cz=0;
                      
                      if (group === 0) {
-                         // 4 Register Bits vertically stacked
-                         const bitIdx = i % 4; 
+                         // 8 Register Bits vertically stacked
+                         // i % 8 to distribute particles across 8 visual rings
+                         const bitIdx = i % 8; 
                          cx = -45;
-                         cy = 15 - (bitIdx * 10); // 15, 5, -5, -15
+                         cy = 28 - (bitIdx * 8); // 28, 20, 12, 4, -4, -12, -20, -28
                          // Small rings
                          const theta = Math.random() * Math.PI * 2;
-                         const r = 3 + Math.random();
+                         const r = 2.5 + Math.random();
                          cx += Math.cos(theta) * r;
                          cy += Math.sin(theta) * r;
                      } else if (group === 1) {
@@ -588,14 +600,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // --- MODE SPECIFIC PHYSICS ---
             if (circuitMode === 'PRIME_CHECKER' && gateType === 'HALF_ADDER') {
                 // PRIME CHECKER LOGIC
-                // Region 0: Register Bank (Bits 0-3)
+                // Region 0: Register Bank (Bits 0-7)
                 // Region 1: Logic Mesh (Filter)
                 // Region 2: Output Latch
                 
                 if (rid === 0) {
                     // Register activity
-                    // Map particle index to bit: i % 4
-                    const bitIdx = i % 4;
+                    // Map particle index to bit: i % 8
+                    const bitIdx = i % 8;
                     const bitActive = (params.programCounter >> bitIdx) & 1;
                     if (bitActive) localAmp = getPulse(0);
                 } 
@@ -930,280 +942,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             outlineRef.current.instanceMatrix.needsUpdate = true;
             if (outlineRef.current.instanceColor) outlineRef.current.instanceColor.needsUpdate = true;
         }
-        linesRef.current.geometry.setDrawRange(0, 0);
-        return; 
-    }
-    // --- END LOGIC MODE ---
-
-
-    // --- STANDARD PHYSICS (Experiments A, B, C) ---
-    // Spatial Hashing Refresh
-    spatialRefs.current.frameCounter++;
-    const CELL_SIZE = 5.0;
-    const GRID_SIZE = 4096; 
-    if (spatialRefs.current.frameCounter % 3 === 0) {
-        const { gridHead, gridNext, neighborList, neighborCounts } = spatialRefs.current;
-        gridHead.fill(-1);
-        neighborCounts.fill(0);
-        for (let i = 0; i < count; i++) {
-            const xi = Math.floor((x[i*3] + 500) / CELL_SIZE);
-            const yi = Math.floor((x[i*3+1] + 500) / CELL_SIZE);
-            const zi = Math.floor((x[i*3+2] + 500) / CELL_SIZE);
-            const hash = Math.abs((xi * 73856093) ^ (yi * 19349663) ^ (zi * 83492791)) % GRID_SIZE;
-            gridNext[i] = gridHead[hash];
-            gridHead[hash] = i;
-        }
-        const maxNeighbors = 48; 
-        for (let i = 0; i < count; i++) {
-            const xi = Math.floor((x[i*3] + 500) / CELL_SIZE);
-            const yi = Math.floor((x[i*3+1] + 500) / CELL_SIZE);
-            const zi = Math.floor((x[i*3+2] + 500) / CELL_SIZE);
-            let foundCount = 0;
-            const offset = i * maxNeighbors;
-            for (let dz = -1; dz <= 1; dz++) {
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                         if (foundCount >= maxNeighbors) break;
-                         const hash = Math.abs(((xi + dx) * 73856093) ^ ((yi + dy) * 19349663) ^ ((zi + dz) * 83492791)) % GRID_SIZE;
-                         let j = gridHead[hash];
-                         while (j !== -1 && foundCount < maxNeighbors) {
-                             if (j !== i) {
-                                 const distSq = (x[j*3]-x[i*3])**2 + (x[j*3+1]-x[i*3+1])**2 + (x[j*3+2]-x[i*3+2])**2;
-                                 
-                                 const neighborDistLimit = 25.0; 
-                                 
-                                 if (distSq < neighborDistLimit) { 
-                                     neighborList[offset + foundCount] = j;
-                                     foundCount++;
-                                 }
-                             }
-                             j = gridNext[j];
-                         }
-                    }
-                }
-            }
-            neighborCounts[i] = foundCount;
-        }
-    }
-
-    for (let i = 0; i < count; i++) {
-      let fx = 0, fy = 0, fz = 0;
-      let phaseDelta = 0; 
-      const idx3 = i * 3;
-      const ix = x[idx3], iy = x[idx3 + 1], iz = x[idx3 + 2];
-      const rid = regionID[i];
-      const nOffset = i * 48; 
-      const nCount = spatialRefs.current.neighborCounts[i];
-
-      // Base forces
-      if (effectiveChaos) {
-          fx += (Math.random() - 0.5) * 1.5;
-          fy += (Math.random() - 0.5) * 1.5;
-          fz += (Math.random() - 0.5) * 1.5;
-          fx += -iy * 0.05; fy += ix * 0.05;
-      } else if (systemTemperature > 0.5) {
-          const noise = systemTemperature * 0.25; 
-          fx += (Math.random() - 0.5) * noise;
-          fy += (Math.random() - 0.5) * noise;
-          fz += (Math.random() - 0.5) * noise;
-      } else if (!started) {
-          fx += (Math.random() - 0.5) * 0.02;
-          fy += (Math.random() - 0.5) * 0.02;
-          fz += (Math.random() - 0.5) * 0.02;
-          fx += -iy * 0.001; fy += ix * 0.001;
-      }
-
-      if (hasTarget[i] && !effectiveChaos && started) {
-          const dx = target[idx3] - ix;
-          const dy = target[idx3+1] - iy;
-          const dz = target[idx3+2] - iz;
-          // Standard Mode: Loose springs for fluid motion
-          const k = k_spring_base;
-          
-          fx += dx * k;
-          fy += dy * k;
-          fz += dz * k;
-      }
-
-      // --- PHYSICAL COUPLING (Universal for all modes) ---
-      // This is what allows the wave from Input to propagate to Output
-      
-      const baseInteractionStrength = hasTarget[i] ? 0.1 : 1.0;
-      let predictionLock = 0.0;
-
-      if (baseInteractionStrength > 0.01) {
-          for (let n = 0; n < nCount; n++) {
-            const j = spatialRefs.current.neighborList[nOffset + n];
-            const rj = regionID[j];
-            
-             if ((rid === 0 && rj === 1) || (rid === 1 && rj === 0)) continue;
-
-            const dx = x[j*3] - ix; const dy = x[j*3+1] - iy; const dz = x[j*3+2] - iz;
-            const distSq = dx*dx + dy*dy + dz*dz;
-            if (distSq < 0.01 || distSq > 64.0) continue; 
-            const dist = Math.sqrt(distSq);
-            
-            const r0 = equilibriumDistance; 
-            let force = 0;
-            
-            const phaseDiff = phase[j] - phase[i];
-
-            let paperCoupling = 1.0;
-            if (usePaperPhysics) {
-                const phaseTerm = (Math.cos(phaseDiff) + 1.0) / 2.0; 
-                const spinTerm = 1.0 + spinCouplingStrength * spin[i] * spin[j];
-                const syncStrength = DyT(phaseTerm, 1.0, 2.0);
-                paperCoupling = (phaseTerm * phaseCouplingStrength) * spinTerm * syncStrength;
-            }
-            
-            let springF = 0;
-            
-            if (dist < r0) springF = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
-            else if (!hasTarget[i]) springF = stiffness * stiffnessMult * (dist - r0) * 0.1;
-
-            force += springF;
-
-            // STDP & Prediction (Standard Mode Only)
-            if (!usePaperPhysics) {
-                const weightJI = forwardMatrix[j * count + i]; 
-                if (weightJI > 0.01) {
-                    const signal = weightJI * delayedActivation[j];
-                    predictionLock += signal; 
-                    force += signal * 0.01; 
-                }
-            }
-            
-            force *= baseInteractionStrength;
-            const invDist = 1.0 / dist;
-            fx += dx * invDist * force; fy += dy * invDist * force; fz += dz * invDist * force;
-            
-            const showLine = (j > i && dist < r0 * 2.0);
-
-            if (showLine && lineIndex < maxConnections) {
-                const li = lineIndex * 6;
-                linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
-                linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
-                
-                lineColors[li] = 0; lineColors[li+1] = 0.3; lineColors[li+2] = 0.8; 
-                lineColors[li+3] = 0; lineColors[li+4] = 0.3; lineColors[li+5] = 0.8;
-                
-                lineIndex++;
-            }
-          }
-      }
-
-      let particleDamping = 0.85; 
-      if (usePaperPhysics) particleDamping = 0.90; 
-      if (!started) particleDamping = 0.95; 
-      else if (effectiveChaos) particleDamping = 0.98;
-      
-      v[idx3] = v[idx3] * particleDamping + fx;
-      v[idx3+1] = v[idx3+1] * particleDamping + fy;
-      v[idx3+2] = v[idx3+2] * particleDamping + fz;
-      
-      const speedSq = v[idx3]**2 + v[idx3+1]**2 + v[idx3+2]**2;
-      const speed = Math.sqrt(speedSq);
-      totalSpeed += speed;
-
-      x[idx3] += v[idx3]; x[idx3+1] += v[idx3+1]; x[idx3+2] += v[idx3+2];
-      
-      // Boundary check
-      const rSq = x[idx3]**2 + x[idx3+1]**2 + x[idx3+2]**2;
-      if (rSq > 3000) { x[idx3]*=0.99; x[idx3+1]*=0.99; x[idx3+2]*=0.99; }
-      
-      if (!logicMode) phase[i] += phaseSyncRate * phaseDelta + 0.05;
-
-      // --- HYSTERESIS & ACTIVATION ---
-      let externalDrive = hasTarget[i] ? 1.0 : 0.0;
-
-    
-      // Standard Hysteresis Logic
-      const totalInputEnergy = externalDrive; 
-      const currentHysteresis = hysteresisState[i];
-      let nextHysteresis = currentHysteresis;
-      if (currentHysteresis === 0) {
-          if (totalInputEnergy > CONSTANTS.activationThresholdHigh) nextHysteresis = 1;
-      } else {
-          if (totalInputEnergy < CONSTANTS.activationThresholdLow) nextHysteresis = 0;
-      }
-      hysteresisState[i] = nextHysteresis;
-      const targetActivation = nextHysteresis === 1 ? 1.0 : 0.0;
-      activation[i] += (targetActivation - activation[i]) * 0.2;
-      delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
-
-
-      // --- VISUALIZATION UPDATE ---
-      TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
-      
-      // Standard Coloring ... (Preserved from previous logic)
-      const entropy = Math.min(1.0, speed * 0.5); 
-      let r=0, g=0, b=0;
-      
-      if (usePaperPhysics) {
-          if (spin[i] > 0) {
-              r = SPIN_UP_COLOR.r; g = SPIN_UP_COLOR.g; b = SPIN_UP_COLOR.b; 
-          } else {
-              r = SPIN_DOWN_COLOR.r; g = SPIN_DOWN_COLOR.g; b = SPIN_DOWN_COLOR.b; 
-          }
-          const pulse = (Math.sin(phase[i]) + 1) * 0.5;
-          r += pulse * 0.3; g += pulse * 0.3; b += pulse * 0.3;
-          if (activation[i] > 0.8) { r += 0.5; g += 0.5; b += 0.5; }
-      } else {
-          let errorMetric = 0;
-          if (hasTarget[i]) {
-              const dx = target[idx3] - x[idx3];
-              const dy = target[idx3+1] - x[idx3+1];
-              const dz = target[idx3+2] - x[idx3+2];
-              errorMetric = Math.sqrt(dx*dx + dy*dy + dz*dz);
-          } else {
-              errorMetric = speed * 25.0; 
-          }
-          const t = Math.min(1.0, errorMetric / 10.0);
-          TEMP_COLOR.lerpColors(GOLD, RED, t);
-          r = TEMP_COLOR.r; g = TEMP_COLOR.g; b = TEMP_COLOR.b;
-      }
-
-      const coreMix = entropy * 2.0; 
-      TEMP_COLOR.setRGB(r * (1+coreMix), g * (1+coreMix), b * (1+coreMix)); 
-      
-      if (flashRef.current && flashRef.current[i] > 0.05) {
-           const f = flashRef.current[i];
-           TEMP_COLOR.lerp(WHITE, Math.min(1.0, f));
-           if (f > 1.0) { TEMP_COLOR.r += f * 0.5; TEMP_COLOR.g += f * 0.5; TEMP_COLOR.b += f * 0.5; }
-      }
-      else if (activation[i] > 0.5) {
-          TEMP_COLOR.lerp(WHITE, activation[i] * 0.5);
-      }
-      if(meshRef.current) meshRef.current.setColorAt(i, TEMP_COLOR);
-      
-      
-      // Update Scale/Matrix
-      const s = hasTarget[i] ? 0.25 : 0.35; 
-      TEMP_OBJ.scale.set(s, s, s);
-      
-      TEMP_OBJ.updateMatrix();
-      if(meshRef.current) meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
-      if(outlineRef.current) outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
-
-      // Glow Update
-      const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
-      const glowIntensity = usePaperPhysics ? 3.5 : 2.5 + (Math.min(1.0, speed * 0.5)) * 4.0;
-      TEMP_EMISSIVE.setRGB(TEMP_COLOR.r * glowIntensity * pulse, TEMP_COLOR.g * glowIntensity * pulse, TEMP_COLOR.b * glowIntensity * pulse);
-      
-      if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
-
-    } // End of Particle Loop
-
-    // --- Post-Loop Updates ---
-    if (meshRef.current) {
-        meshRef.current.instanceMatrix.needsUpdate = true;
-        if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
-    }
-    if (outlineRef.current) {
-        outlineRef.current.instanceMatrix.needsUpdate = true;
-        if (outlineRef.current.instanceColor) outlineRef.current.instanceColor.needsUpdate = true;
-    }
-    if (linesRef.current) {
         linesRef.current.geometry.setDrawRange(0, lineIndex * 2);
         linesRef.current.geometry.attributes.position.needsUpdate = true;
         linesRef.current.geometry.attributes.color.needsUpdate = true;
@@ -1240,25 +978,25 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
      
      if (gateType === 'HALF_ADDER') {
          if (circuitMode === 'PRIME_CHECKER') {
-             // 4-BIT REG (LEFT)
-             for(let i=0; i<4; i++) {
-                 const cy = 15 - (i * 10);
+             // 8-BIT REG (LEFT)
+             for(let i=0; i<8; i++) {
+                 const cy = 28 - (i * 8);
                  const cx = -45;
                  const circle = [];
                  for(let j=0; j<=16; j++) {
                      const theta = (j/16) * Math.PI * 2;
-                     circle.push(new THREE.Vector3(cx + Math.cos(theta)*3, cy + Math.sin(theta)*3, 0));
+                     circle.push(new THREE.Vector3(cx + Math.cos(theta)*2.5, cy + Math.sin(theta)*2.5, 0));
                  }
                  shape.push(circle);
                  // Line to Mesh
-                 shape.push([new THREE.Vector3(cx+3, cy, 0), new THREE.Vector3(-20, 0, 0)]);
+                 shape.push([new THREE.Vector3(cx+3, cy, 0), new THREE.Vector3(-20, cy*0.5, 0)]);
              }
              
              // Logic Mesh Box
              const box = [
-                 new THREE.Vector3(-20, 15, 0), new THREE.Vector3(20, 15, 0),
-                 new THREE.Vector3(20, -15, 0), new THREE.Vector3(-20, -15, 0),
-                 new THREE.Vector3(-20, 15, 0)
+                 new THREE.Vector3(-20, 20, 0), new THREE.Vector3(20, 20, 0),
+                 new THREE.Vector3(20, -20, 0), new THREE.Vector3(-20, -20, 0),
+                 new THREE.Vector3(-20, 20, 0)
              ];
              shape.push(box);
              
@@ -1364,14 +1102,19 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
           ))}
           {gateType === 'HALF_ADDER' && circuitMode === 'PRIME_CHECKER' && (
               <>
-                 <Text position={[-45, 22, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">COUNTER</Text>
-                 <Text position={[0, 20, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">LOGIC MESH (FILTER)</Text>
+                 <Text position={[-45, 36, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">COUNTER (8-BIT)</Text>
+                 <Text position={[0, 25, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">LOGIC MESH (FILTER)</Text>
                  <Text position={[45, 18, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">RESULT LATCH</Text>
                  
-                 <Text position={[-45, 15, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B0</Text>
-                 <Text position={[-45, 5, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B1</Text>
-                 <Text position={[-45, -5, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B2</Text>
-                 <Text position={[-45, -15, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B3</Text>
+                 {/* Visual labels for 8 bits */}
+                 <Text position={[-50, 28, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">0</Text>
+                 <Text position={[-50, 20, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">1</Text>
+                 <Text position={[-50, 12, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">2</Text>
+                 <Text position={[-50, 4, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">3</Text>
+                 <Text position={[-50, -4, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">4</Text>
+                 <Text position={[-50, -12, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">5</Text>
+                 <Text position={[-50, -20, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">6</Text>
+                 <Text position={[-50, -28, 0]} fontSize={1} color="#555" anchorX="right" anchorY="middle">7</Text>
               </>
           )}
           {gateType === 'HALF_ADDER' && circuitMode === 'REGISTER_BANK' && (
@@ -1436,8 +1179,9 @@ const TruthTable: React.FC<{ params: SimulationParams }> = ({ params }) => {
             <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
                 <div className="text-[10px] text-gray-500 font-mono text-center">PROGRAM STATE</div>
                 <div className="text-2xl font-mono text-center text-white font-bold tracking-widest mt-1">
-                    {params.programCounter.toString(2).padStart(4, '0')} ({params.programCounter})
+                    {params.programCounter.toString(2).padStart(8, '0')}
                 </div>
+                <div className="text-center text-xs text-gray-400 mb-2">DEC: {params.programCounter}</div>
                 <div className="border-t border-gray-700 my-2"></div>
                 <div className="flex justify-between items-center text-xs">
                     <span className="text-gray-400">CHECKING:</span>
@@ -1570,6 +1314,15 @@ const UIOverlay: React.FC<{
     onRunTests: () => void
 }> = ({ mode, params, setParams, setFeedback, onExit, onShowInfo, testResults, isTesting, onRunTests }) => {
     
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    // Auto-scroll terminal
+    useEffect(() => {
+        if (outputRef.current) {
+            outputRef.current.scrollTop = outputRef.current.scrollHeight;
+        }
+    }, [params.foundPrimes]);
+
     // --- Mode Specific Controls ---
     const renderControls = () => {
         if (mode === 'inference') {
@@ -1649,24 +1402,38 @@ const UIOverlay: React.FC<{
                                  <div className="text-lg font-mono text-cyan-300 font-bold">{params.programStep}</div>
                              </div>
                              
-                             <button 
-                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive}))}
-                                className={`w-full py-3 text-xs font-bold border transition-all ${params.loopActive ? 'bg-cyan-900/40 border-cyan-500 text-cyan-200 animate-pulse' : 'bg-gray-900 border-gray-600 text-gray-400 hover:border-white'}`}
-                             >
-                                {params.loopActive ? "PAUSE PROGRAM" : "RUN SEARCH PROGRAM"}
-                             </button>
-                             <button 
-                                onClick={() => setParams((p: any) => ({...p, programCounter: 0, loopActive: false, isPrime: false, foundPrimes: []}))}
-                                className="w-full py-2 bg-red-900/20 border border-red-500/50 text-red-300 text-xs font-bold hover:bg-red-900/40"
-                             >
-                                RESET COUNTER
-                             </button>
+                             <div className="grid grid-cols-2 gap-2">
+                                 <button 
+                                    onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive}))}
+                                    className={`w-full py-3 text-xs font-bold border transition-all ${params.loopActive ? 'bg-cyan-900/40 border-cyan-500 text-cyan-200 animate-pulse' : 'bg-green-900/30 border-green-500 text-green-400 hover:border-white'}`}
+                                 >
+                                    {params.loopActive ? "PAUSE" : "RUN"}
+                                 </button>
+                                 <button 
+                                    onClick={() => setParams((p: any) => ({...p, programCounter: 0, loopActive: false, isPrime: false, foundPrimes: []}))}
+                                    className="w-full py-3 bg-red-900/20 border border-red-500/50 text-red-300 text-xs font-bold hover:bg-red-900/40"
+                                 >
+                                    RESET
+                                 </button>
+                             </div>
 
-                             <div className="mt-4 p-2 bg-black/60 border border-cyan-900/50">
-                                <div className="text-[10px] text-cyan-500 font-mono mb-1">TERMINAL OUTPUT: PRIMES</div>
-                                <div className="font-mono text-xs text-green-400 h-16 overflow-y-auto break-words leading-relaxed">
-                                    {params.foundPrimes.length > 0 ? params.foundPrimes.join(', ') : "_"}
-                                    <span className="animate-pulse">_</span>
+                             <div className="mt-4 bg-black/80 border border-cyan-900/50 shadow-inner">
+                                <div className="flex justify-between items-center px-2 py-1 bg-cyan-900/20 border-b border-cyan-900/30">
+                                    <div className="text-[10px] text-cyan-500 font-mono tracking-widest">TERMINAL OUTPUT</div>
+                                    <div className="text-[10px] text-gray-500 font-mono">COUNT: {params.foundPrimes.length}</div>
+                                </div>
+                                <div 
+                                    ref={outputRef}
+                                    className="p-2 font-mono text-xs text-green-400 h-32 overflow-y-auto break-words leading-relaxed scrollbar-thin scrollbar-thumb-cyan-900 scrollbar-track-black"
+                                >
+                                    {params.foundPrimes.length > 0 ? (
+                                        params.foundPrimes.map((p, i) => (
+                                            <span key={i}>{p}{i < params.foundPrimes.length - 1 ? ', ' : ''}</span>
+                                        ))
+                                    ) : (
+                                        <span className="text-gray-600 italic">Waiting for results...</span>
+                                    )}
+                                    <span className="animate-pulse ml-1">_</span>
                                 </div>
                              </div>
                         </div>
@@ -2003,13 +1770,11 @@ const App: React.FC = () => {
                         nextStep = 'COMPUTE';
                         // Logic runs here...
                         const n = current.programCounter;
-                        const primes = [2, 3, 5, 7, 11, 13];
-                        nextPrime = primes.includes(n);
+                        nextPrime = isPrimeNumber(n);
                     } 
                     else if (current.programStep === 'COMPUTE') {
                         nextStep = 'LATCH';
                         if (current.isPrime) {
-                            // Add to history if not present (unique list for 0-15 cycle)
                             if (!newFoundPrimes.includes(current.programCounter)) {
                                 newFoundPrimes = [...newFoundPrimes, current.programCounter].sort((a,b)=>a-b);
                             }
@@ -2017,7 +1782,7 @@ const App: React.FC = () => {
                     } 
                     else if (current.programStep === 'LATCH') {
                         nextStep = 'INCREMENT';
-                        nextCount = (current.programCounter + 1) % 16;
+                        nextCount = current.programCounter + 1; // Infinite loop
                     }
                     
                     return { 
@@ -2028,8 +1793,8 @@ const App: React.FC = () => {
                         foundPrimes: newFoundPrimes
                     };
                 });
-                // Speed up for prime check
-                intervalTime = 800; 
+                // Speed up for prime check (fast loop)
+                intervalTime = 400; 
             }
             else if (params.circuitMode === 'REGISTER_BANK') {
                  // Counts up 0-15 and stores it
@@ -2107,7 +1872,7 @@ const App: React.FC = () => {
             newParams.usePaperPhysics = true;
             newParams.gateType = 'HALF_ADDER';
             newParams.inputText = "PRIME";
-            newParams.particleCount = 800; // High count for 3 regions
+            newParams.particleCount = 1000; // Increased for better 8-bit visualization
             newParams.loopActive = false;
             newParams.circuitMode = 'PRIME_CHECKER';
             newParams.programCounter = 0;
