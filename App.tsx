@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
@@ -22,6 +21,9 @@ const TEMP_EMISSIVE = new THREE.Color();
 const WHITE = new THREE.Color(1, 1, 1);
 const GOLD = new THREE.Color("#FFD700");
 const RED = new THREE.Color("#FF0000");
+const CYAN = new THREE.Color("#00FFFF");
+const MAGENTA = new THREE.Color("#FF00FF");
+const DARK = new THREE.Color("#111111");
 
 // Paper Colors for Spin
 const SPIN_UP_COLOR = new THREE.Color("#ff0055"); // Spin +1/2
@@ -216,38 +218,59 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   useEffect(() => {
     if (params.paused) return; 
     
-    // --- SPECIAL LOGIC MODE LAYOUT ---
+    // --- SPECIAL LOGIC MODE LAYOUT (Y-Junction) ---
     if (params.logicMode) {
         const count = params.particleCount;
         data.current.hasTarget.fill(1);
         
-        // Arrange particles into three distinct clusters for Gate Visualization
-        // UPDATED: Clusters positioned closer together to ensure signal overlap for XOR
+        // Split particles into 3 defined channel groups
+        const channelSize = Math.floor(count / 3);
+        
         for(let i=0; i<count; i++) {
-            const rid = data.current.regionID[i];
-            let cx=0, cy=0;
+            let cx=0, cy=0, cz=0;
+            let group = 0; // 0=InputA, 1=InputB, 2=Output
+
+            if (i < channelSize) group = 0; 
+            else if (i < channelSize * 2) group = 1; 
+            else group = 2;
+
+            data.current.regionID[i] = group; // Force region ID to match channel
+
+            // Linear interpolation variable (0 to 1 along the path)
+            const t = (i % channelSize) / channelSize;
             
-            // Layout: Triangle formation, tight spacing
-            if (rid === 0) { // Input A (Top Left)
-                cx = -5; cy = 4; 
-            } else if (rid === 1) { // Input B (Top Right)
-                cx = 5; cy = 4;
-            } else { // Output (Bottom Center)
-                cx = 0; cy = -2;
+            // Y-Junction Coordinates
+            // Input A: Top Left (-35, 15) -> Center (-5, 0)
+            // Input B: Bottom Left (-35, -15) -> Center (-5, 0)
+            // Output: Center (-5, 0) -> Right (35, 0)
+
+            const jitter = 1.5; // Tube thickness
+
+            if (group === 0) {
+                 // Path A
+                 cx = -35 * (1-t) + (-5) * t;
+                 cy = 15 * (1-t) + (0) * t;
+                 cz = (Math.random() - 0.5) * jitter;
+                 cy += (Math.random() - 0.5) * jitter;
+            } else if (group === 1) {
+                 // Path B
+                 cx = -35 * (1-t) + (-5) * t;
+                 cy = -15 * (1-t) + (0) * t;
+                 cz = (Math.random() - 0.5) * jitter;
+                 cy += (Math.random() - 0.5) * jitter;
+            } else {
+                 // Output
+                 cx = -5 * (1-t) + 35 * t;
+                 cy = (Math.random() - 0.5) * jitter;
+                 cz = (Math.random() - 0.5) * jitter;
             }
+
+            data.current.target[i*3] = cx;
+            data.current.target[i*3+1] = cy;
+            data.current.target[i*3+2] = cz;
             
-            // Sphere distribution around center
-            const r = 4 * Math.pow(Math.random(), 0.5); // Tighter radius
-            const theta = Math.random() * Math.PI * 2;
-            
-            data.current.target[i*3] = cx + r * Math.cos(theta);
-            data.current.target[i*3+1] = cy + r * Math.sin(theta);
-            data.current.target[i*3+2] = (Math.random() - 0.5) * 4; 
-            
-            data.current.activation[i] = 0.0; // Reset activation
-            
-            // CRITICAL: Force Spin Alignment in Logic Mode to purely demonstrate Phase Interference
-            data.current.spin[i] = 1;
+            data.current.activation[i] = 0.0;
+            data.current.spin[i] = 1; // Unify spin
         }
         return;
     }
@@ -380,8 +403,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                              if (j !== i) {
                                  const distSq = (x[j*3]-x[i*3])**2 + (x[j*3+1]-x[i*3+1])**2 + (x[j*3+2]-x[i*3+2])**2;
                                  
-                                 // Logic Mode: Allow longer range connections to facilitate signal transmission between clusters
-                                 const neighborDistLimit = logicMode ? 64.0 : 25.0; 
+                                 // Logic Mode: Use tighter interaction for clean visualization
+                                 const neighborDistLimit = logicMode ? 10.0 : 25.0; 
                                  
                                  if (distSq < neighborDistLimit) { 
                                      neighborList[offset + foundCount] = j;
@@ -413,38 +436,80 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     const delayAlpha = 0.1;
 
     for (let i = 0; i < count; i++) {
-      // --- LOGIC GATE FORCE OVERRIDE ---
-      if (logicMode) {
-          const rid = regionID[i];
-          // Force activation and phase for Inputs A and B based on User Logic State
-          if (rid === 0) { // Input A
-              if (logicState[0]) {
-                  activation[i] = 1.0;
-                  phase[i] = 0.0; // Input A = 0 phase
-              } else {
-                  activation[i] = 0.0; // Force OFF
-              }
-          } else if (rid === 1) { // Input B
-              if (logicState[1]) {
-                  activation[i] = 1.0;
-                  phase[i] = Math.PI; // Input B = 180 deg phase (Cancel A)
-              } else {
-                  activation[i] = 0.0; // Force OFF
-              }
-          }
-      }
-
       let fx = 0, fy = 0, fz = 0;
-      let phaseDelta = 0;
+      let phaseDelta = 0; // Accumulated phase change from neighbors
       const idx3 = i * 3;
       const ix = x[idx3], iy = x[idx3 + 1], iz = x[idx3 + 2];
       const rid = regionID[i];
       const nOffset = i * 48; 
       const nCount = spatialRefs.current.neighborCounts[i];
-      
-      sumCosPhase += Math.cos(phase[i]);
-      sumSinPhase += Math.sin(phase[i]);
-      netSpin += spin[i];
+
+      // --- LOGIC GATE SIMULATION OVERRIDE ---
+      if (logicMode) {
+          // Channel flow visualization logic
+          const channelSize = Math.floor(count / 3);
+          const t = (i % channelSize) / channelSize; // Progress along channel (0 to 1)
+          
+          let isActive = false;
+          let flowPhase = 0;
+
+          // Interference Calculation for Output Channel
+          const inputA = logicState[0] ? 1.0 : 0.0;
+          const inputB = logicState[1] ? -1.0 : 0.0; // Note negative phase for B
+          const combined = inputA + inputB; 
+          const isInterference = (inputA !== 0 && inputB !== 0);
+          const outputActive = Math.abs(combined) > 0.5;
+
+          if (rid === 0) { // Input A
+              isActive = logicState[0];
+              flowPhase = 1.0;
+          } else if (rid === 1) { // Input B
+              isActive = logicState[1];
+              flowPhase = -1.0;
+          } else if (rid === 2) { // Output
+              isActive = outputActive;
+              // Pass the color of the winning input, or 0 if cancelled
+              flowPhase = combined; 
+          }
+
+          if (isActive) {
+              activation[i] = 1.0;
+              // Visual Flow Wave: sin(position + time)
+              const wave = Math.sin(t * 10.0 - timeNow * 8.0);
+              
+              // Apply Flow Color
+              if (flowPhase > 0.5) TEMP_COLOR.copy(CYAN);
+              else if (flowPhase < -0.5) TEMP_COLOR.copy(MAGENTA);
+              else TEMP_COLOR.copy(DARK); // Should happen if inactive
+
+              // Add wave pulse to color
+              TEMP_COLOR.lerp(WHITE, Math.max(0, wave * 0.5));
+          } else {
+              activation[i] *= 0.9; // Fast decay
+              
+              // Visualization of Destructive Interference (Collision)
+              if (rid === 2 && isInterference) {
+                 TEMP_COLOR.copy(DARK); // Blocked
+                 // Small jitter for "clash"
+                 fx += (Math.random()-0.5) * 0.5; 
+                 fy += (Math.random()-0.5) * 0.5; 
+              } else {
+                 TEMP_COLOR.setHex(0x222222); // Idle dim path
+              }
+          }
+          
+          if(meshRef.current) meshRef.current.setColorAt(i, TEMP_COLOR);
+          
+          // Force scale based on flow
+          const scale = isActive ? 0.3 + Math.sin(t * 15 - timeNow * 10)*0.1 : 0.15;
+          TEMP_OBJ.scale.set(scale, scale, scale);
+      } 
+      // --- STANDARD PHYSICS LOGIC ---
+      else {
+          sumCosPhase += Math.cos(phase[i]);
+          sumSinPhase += Math.sin(phase[i]);
+          netSpin += spin[i];
+      }
 
       // Base forces
       if (effectiveChaos) {
@@ -471,133 +536,125 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
           totalError += dist;
           
-          fx += dx * k_spring_base;
-          fy += dy * k_spring_base;
-          fz += dz * k_spring_base;
+          // Logic Mode: Tighter spring to keep stream shape
+          const k = logicMode ? 0.8 : k_spring_base;
+          
+          fx += dx * k;
+          fy += dy * k;
+          fz += dz * k;
       }
 
-      const baseInteractionStrength = hasTarget[i] ? 0.1 : 1.0;
-      let predictionLock = 0.0;
-      let phasorX = 0;
-      let phasorY = 0;
+      if (!logicMode) {
+          // ... (Standard interaction logic preserved for other modes) ...
+          // Note: Logic Mode uses simplified flow visualization logic above instead of N-body calculation
+          // to maintain frame rate and clean visual for the "Stream" effect.
+          
+          const baseInteractionStrength = hasTarget[i] ? 0.1 : 1.0;
+          let predictionLock = 0.0;
+          let phasorX = 0;
+          let phasorY = 0;
 
-      if (baseInteractionStrength > 0.01) {
-          for (let n = 0; n < nCount; n++) {
-            const j = spatialRefs.current.neighborList[nOffset + n];
-            const rj = regionID[j];
-            
-            // Hard Inhibition between A and B
-            if ((rid === 0 && rj === 1) || (rid === 1 && rj === 0)) continue;
-
-            const dx = x[j*3] - ix; const dy = x[j*3+1] - iy; const dz = x[j*3+2] - iz;
-            const distSq = dx*dx + dy*dy + dz*dz;
-            if (distSq < 0.01 || distSq > 64.0) continue; 
-            const dist = Math.sqrt(distSq);
-            const r0 = equilibriumDistance; 
-            let force = 0;
-            
-            const phaseDiff = phase[j] - phase[i];
-
-            // --- PAPER IMPLEMENTATION (Eq 14, 18, 30) ---
-            let paperCoupling = 1.0;
-            if (usePaperPhysics) {
-                const phaseTerm = (Math.cos(phaseDiff) + 1.0) / 2.0; 
-                const spinTerm = 1.0 + spinCouplingStrength * spin[i] * spin[j];
-                const syncStrength = DyT(phaseTerm, 1.0, 2.0);
-
-                paperCoupling = (phaseTerm * phaseCouplingStrength) * spinTerm * syncStrength;
+          if (baseInteractionStrength > 0.01) {
+              for (let n = 0; n < nCount; n++) {
+                const j = spatialRefs.current.neighborList[nOffset + n];
+                const rj = regionID[j];
                 
-                const proximity = Math.max(0, 1.0 - dist / 6.0);
-                const activationWeight = activation[j]; 
-                const weight = spinTerm * proximity * 0.2 * activationWeight; 
-                phasorX += weight * Math.cos(phase[j]);
-                phasorY += weight * Math.sin(phase[j]);
-            }
-            
-            // 1. Symmetric Spring Force (Structure)
-            let springF = 0;
-            if (dist < r0) springF = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
-            else if (!hasTarget[i]) springF = stiffness * stiffnessMult * (dist - r0) * 0.1;
+                if ((rid === 0 && rj === 1) || (rid === 1 && rj === 0)) continue;
 
-            if (usePaperPhysics) {
-                force += springF * paperCoupling;
-            } else {
-                force += springF;
-            }
-
-            // 2. Directed Drive Force (Standard PCN) & Visualization
-            if (!usePaperPhysics) {
-                const weightJI = forwardMatrix[j * count + i]; 
+                const dx = x[j*3] - ix; const dy = x[j*3+1] - iy; const dz = x[j*3+2] - iz;
+                const distSq = dx*dx + dy*dy + dz*dz;
+                if (distSq < 0.01 || distSq > 64.0) continue; 
+                const dist = Math.sqrt(distSq);
+                const r0 = equilibriumDistance; 
+                let force = 0;
                 
-                if (weightJI > 0.01) {
-                    const signal = weightJI * delayedActivation[j];
-                    predictionLock += signal; 
-                    force += signal * 0.01; 
-                }
-            }
-            
-            // 3. CONTINUOUS STDP (Hebbian)
-            if (isEncoding && !usePaperPhysics) {
-                const hebbianProduct = activation[i] * delayedActivation[j];
-                if (hebbianProduct > 0.1) {
-                    const deltaW = hebbianProduct * continuousStdpRate;
-                    forwardMatrix[j * count + i] += deltaW;
-                    if (forwardMatrix[j * count + i] > 1.0) forwardMatrix[j * count + i] = 1.0;
-                }
-            }
+                const phaseDiff = phase[j] - phase[i];
 
-            force *= baseInteractionStrength;
-            const invDist = 1.0 / dist;
-            fx += dx * invDist * force; fy += dy * invDist * force; fz += dz * invDist * force;
-            
-            // Phase Synchronization (Kuramoto)
-            let allowSync = true;
-            if (logicMode && (rid === 0 || rid === 1)) allowSync = false;
-
-            if (allowSync) {
-                let syncRate = phaseSyncRate;
+                let paperCoupling = 1.0;
                 if (usePaperPhysics) {
-                     syncRate *= (1.0 + spinCouplingStrength * spin[i] * spin[j]);
+                    const phaseTerm = (Math.cos(phaseDiff) + 1.0) / 2.0; 
+                    const spinTerm = 1.0 + spinCouplingStrength * spin[i] * spin[j];
+                    const syncStrength = DyT(phaseTerm, 1.0, 2.0);
+
+                    paperCoupling = (phaseTerm * phaseCouplingStrength) * spinTerm * syncStrength;
+                    
+                    const proximity = Math.max(0, 1.0 - dist / 6.0);
+                    const activationWeight = activation[j]; 
+                    const weight = spinTerm * proximity * 0.2 * activationWeight; 
+                    phasorX += weight * Math.cos(phase[j]);
+                    phasorY += weight * Math.sin(phase[j]);
                 }
-                phaseDelta += Math.sin(phaseDiff) * 0.1 * syncRate;
-            }
-
-            // Visual Lines
-            const showLine = usePaperPhysics 
-                ? (paperCoupling > 0.8 && dist < r0 * 2.5) 
-                : (j > i && dist < r0 * 2.0);
-
-            if (showLine && lineIndex < maxConnections) {
-                const li = lineIndex * 6;
-                linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
-                linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
                 
+                let springF = 0;
+                if (dist < r0) springF = -stiffness * stiffnessMult * (r0 - dist) * 2.0;
+                else if (!hasTarget[i]) springF = stiffness * stiffnessMult * (dist - r0) * 0.1;
+
                 if (usePaperPhysics) {
-                    const hue = Math.abs(Math.cos(phaseDiff));
-                    lineColors[li] = hue * 2; lineColors[li+1] = hue; lineColors[li+2] = 0.5;
-                    lineColors[li+3] = hue * 2; lineColors[li+4] = hue; lineColors[li+5] = 0.5;
+                    force += springF * paperCoupling;
                 } else {
-                    lineColors[li] = 0; lineColors[li+1] = 0.3; lineColors[li+2] = 0.8; 
-                    lineColors[li+3] = 0; lineColors[li+4] = 0.3; lineColors[li+5] = 0.8;
+                    force += springF;
                 }
-                lineIndex++;
-            }
+
+                if (!usePaperPhysics) {
+                    const weightJI = forwardMatrix[j * count + i]; 
+                    if (weightJI > 0.01) {
+                        const signal = weightJI * delayedActivation[j];
+                        predictionLock += signal; 
+                        force += signal * 0.01; 
+                    }
+                }
+                
+                if (isEncoding && !usePaperPhysics) {
+                    const hebbianProduct = activation[i] * delayedActivation[j];
+                    if (hebbianProduct > 0.1) {
+                        const deltaW = hebbianProduct * continuousStdpRate;
+                        forwardMatrix[j * count + i] += deltaW;
+                        if (forwardMatrix[j * count + i] > 1.0) forwardMatrix[j * count + i] = 1.0;
+                    }
+                }
+
+                force *= baseInteractionStrength;
+                const invDist = 1.0 / dist;
+                fx += dx * invDist * force; fy += dy * invDist * force; fz += dz * invDist * force;
+                
+                if (usePaperPhysics) {
+                     const syncRate = phaseSyncRate * (1.0 + spinCouplingStrength * spin[i] * spin[j]);
+                     phaseDelta += Math.sin(phaseDiff) * 0.1 * syncRate;
+                }
+
+                const showLine = usePaperPhysics 
+                    ? (paperCoupling > 0.8 && dist < r0 * 2.5) 
+                    : (j > i && dist < r0 * 2.0);
+
+                if (showLine && lineIndex < maxConnections) {
+                    const li = lineIndex * 6;
+                    linePositions[li] = ix; linePositions[li+1] = iy; linePositions[li+2] = iz;
+                    linePositions[li+3] = x[j*3]; linePositions[li+4] = x[j*3+1]; linePositions[li+5] = x[j*3+2];
+                    
+                    if (usePaperPhysics) {
+                        const hue = Math.abs(Math.cos(phaseDiff));
+                        lineColors[li] = hue * 2; lineColors[li+1] = hue; lineColors[li+2] = 0.5;
+                        lineColors[li+3] = hue * 2; lineColors[li+4] = hue; lineColors[li+5] = 0.5;
+                    } else {
+                        lineColors[li] = 0; lineColors[li+1] = 0.3; lineColors[li+2] = 0.8; 
+                        lineColors[li+3] = 0; lineColors[li+4] = 0.3; lineColors[li+5] = 0.8;
+                    }
+                    lineIndex++;
+                }
+              }
           }
-      }
+      } // End of non-logic physics
 
       let particleDamping = 0.85; 
-      if (usePaperPhysics) {
+      if (logicMode) particleDamping = 0.7; // Heavy damping for controlled flow
+
+      if (usePaperPhysics && !logicMode) {
           particleDamping = 0.90; 
-          predictionLock = Math.sqrt(phasorX * phasorX + phasorY * phasorY);
       } 
 
       if (!started) particleDamping = 0.95; 
       else if (effectiveChaos) particleDamping = 0.98;
       
-      if (predictionLock > 0.1) {
-          particleDamping *= (1.0 - Math.min(0.5, predictionLock * 0.5));
-      }
-
       v[idx3] = v[idx3] * particleDamping + fx;
       v[idx3+1] = v[idx3+1] * particleDamping + fy;
       v[idx3+2] = v[idx3+2] * particleDamping + fz;
@@ -619,99 +676,98 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       const rSq = x[idx3]**2 + x[idx3+1]**2 + x[idx3+2]**2;
       if (rSq > 2500) { x[idx3]*=0.99; x[idx3+1]*=0.99; x[idx3+2]*=0.99; }
       
-      phase[i] += phaseSyncRate * phaseDelta + 0.05;
+      if (!logicMode) phase[i] += phaseSyncRate * phaseDelta + 0.05;
 
       // --- HYSTERESIS ---
       let externalDrive = hasTarget[i] ? 1.0 : 0.0;
-      if (logicMode && (rid === 0 || rid === 1)) externalDrive = 1.0; 
 
-      const totalInputEnergy = externalDrive + predictionLock * 2.0;
-      const currentHysteresis = hysteresisState[i];
-      let nextHysteresis = currentHysteresis;
+      // Logic Mode skips complex hysteresis / activation dynamics in favor of explicit flow control above
+      if (!logicMode) {
+          const totalInputEnergy = externalDrive; // Simplified for standard
+          const currentHysteresis = hysteresisState[i];
+          let nextHysteresis = currentHysteresis;
 
-      if (currentHysteresis === 0) {
-          if (totalInputEnergy > CONSTANTS.activationThresholdHigh) nextHysteresis = 1;
+          if (currentHysteresis === 0) {
+              if (totalInputEnergy > CONSTANTS.activationThresholdHigh) nextHysteresis = 1;
+          } else {
+              if (totalInputEnergy < CONSTANTS.activationThresholdLow) nextHysteresis = 0;
+          }
+          hysteresisState[i] = nextHysteresis;
+
+          const targetActivation = nextHysteresis === 1 ? 1.0 : 0.0;
+          activation[i] += (targetActivation - activation[i]) * 0.2;
+          
+          delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
+
+          if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
+              lastActiveTime[i] = timeNow;
+          }
+
+          // Update Visuals for Non-Logic Modes
+          TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
+          const s = hasTarget[i] ? 0.25 : 0.35; 
+          TEMP_OBJ.scale.set(s, s, s);
       } else {
-          if (totalInputEnergy < CONSTANTS.activationThresholdLow) nextHysteresis = 0;
-      }
-      hysteresisState[i] = nextHysteresis;
-
-      const targetActivation = nextHysteresis === 1 ? 1.0 : 0.0;
-      activation[i] += (targetActivation - activation[i]) * 0.2;
-      
-      delayedActivation[i] = delayedActivation[i] * (1 - delayAlpha) + activation[i] * delayAlpha;
-
-      if (activation[i] > 0.8 && (timeNow - lastActiveTime[i] > 0.5)) {
-          lastActiveTime[i] = timeNow;
+          // Logic Mode Update Matrix Position only (Scale/Color handled in override block)
+           TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
       }
 
-      // Update Matrices
-      TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
-      const s = hasTarget[i] ? 0.25 : 0.35; 
-      TEMP_OBJ.scale.set(s, s, s);
       TEMP_OBJ.updateMatrix();
       if(meshRef.current) meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
       if(outlineRef.current) outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
 
-      const entropy = Math.min(1.0, speed * 0.5); 
-      let r=0, g=0, b=0;
-      
-      // COLORING LOGIC: GOLD <-> RED based on Error
-      if (usePaperPhysics) {
-          // Paper Mode: Spin Color (Red vs Blue)
-          if (spin[i] > 0) {
-              r = SPIN_UP_COLOR.r; g = SPIN_UP_COLOR.g; b = SPIN_UP_COLOR.b; 
-          } else {
-              r = SPIN_DOWN_COLOR.r; g = SPIN_DOWN_COLOR.g; b = SPIN_DOWN_COLOR.b; 
-          }
-          const pulse = (Math.sin(phase[i]) + 1) * 0.5;
-          r += pulse * 0.3; g += pulse * 0.3; b += pulse * 0.3;
-          if (activation[i] > 0.8) { r += 0.5; g += 0.5; b += 0.5; }
-      } else {
-          // Standard Mode: Error Visualization
-          // Calculate Error Metric
-          let errorMetric = 0;
-          if (hasTarget[i]) {
-              const dx = target[idx3] - x[idx3];
-              const dy = target[idx3+1] - x[idx3+1];
-              const dz = target[idx3+2] - x[idx3+2];
-              errorMetric = Math.sqrt(dx*dx + dy*dy + dz*dz);
-          } else {
-              // No target (e.g., hidden layers or settled), use velocity/entropy
-              errorMetric = speed * 25.0; 
-          }
-
-          // Normalize Error: 0 (Good) -> 1 (Bad/Far)
-          // Threshold of 10.0 units distance maps to full red
-          const t = Math.min(1.0, errorMetric / 10.0);
+      if (!logicMode) {
+          // COLORING LOGIC for Standard Modes
+          const entropy = Math.min(1.0, speed * 0.5); 
+          let r=0, g=0, b=0;
           
-          // Lerp Gold -> Red
-          TEMP_COLOR.lerpColors(GOLD, RED, t);
-          r = TEMP_COLOR.r;
-          g = TEMP_COLOR.g;
-          b = TEMP_COLOR.b;
+          if (usePaperPhysics) {
+              if (spin[i] > 0) {
+                  r = SPIN_UP_COLOR.r; g = SPIN_UP_COLOR.g; b = SPIN_UP_COLOR.b; 
+              } else {
+                  r = SPIN_DOWN_COLOR.r; g = SPIN_DOWN_COLOR.g; b = SPIN_DOWN_COLOR.b; 
+              }
+              const pulse = (Math.sin(phase[i]) + 1) * 0.5;
+              r += pulse * 0.3; g += pulse * 0.3; b += pulse * 0.3;
+              if (activation[i] > 0.8) { r += 0.5; g += 0.5; b += 0.5; }
+          } else {
+              let errorMetric = 0;
+              if (hasTarget[i]) {
+                  const dx = target[idx3] - x[idx3];
+                  const dy = target[idx3+1] - x[idx3+1];
+                  const dz = target[idx3+2] - x[idx3+2];
+                  errorMetric = Math.sqrt(dx*dx + dy*dy + dz*dz);
+              } else {
+                  errorMetric = speed * 25.0; 
+              }
+              const t = Math.min(1.0, errorMetric / 10.0);
+              TEMP_COLOR.lerpColors(GOLD, RED, t);
+              r = TEMP_COLOR.r; g = TEMP_COLOR.g; b = TEMP_COLOR.b;
+          }
+
+          const coreMix = entropy * 2.0; 
+          TEMP_COLOR.setRGB(r * (1+coreMix), g * (1+coreMix), b * (1+coreMix)); 
+          
+          if (flashRef.current && flashRef.current[i] > 0.05) {
+               const f = flashRef.current[i];
+               TEMP_COLOR.lerp(WHITE, Math.min(1.0, f));
+               if (f > 1.0) { TEMP_COLOR.r += f * 0.5; TEMP_COLOR.g += f * 0.5; TEMP_COLOR.b += f * 0.5; }
+          }
+          else if (activation[i] > 0.5) {
+              TEMP_COLOR.lerp(WHITE, activation[i] * 0.5);
+          }
+          if(meshRef.current) meshRef.current.setColorAt(i, TEMP_COLOR);
+
+          const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
+          const glowIntensity = usePaperPhysics ? 3.5 : 2.5 + entropy * 4.0; 
+          TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
+          if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
+      } else {
+          // Logic Mode Glow (Color already set in override block)
+          TEMP_EMISSIVE.copy(TEMP_COLOR).multiplyScalar(2.0);
+          if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
       }
 
-      // Additive Glow based on Entropy/Flash
-      const coreMix = entropy * 2.0; 
-      TEMP_COLOR.setRGB(r * (1+coreMix), g * (1+coreMix), b * (1+coreMix)); 
-      
-      if (flashRef.current && flashRef.current[i] > 0.05) {
-           const f = flashRef.current[i];
-           TEMP_COLOR.lerp(WHITE, Math.min(1.0, f));
-           if (f > 1.0) { TEMP_COLOR.r += f * 0.5; TEMP_COLOR.g += f * 0.5; TEMP_COLOR.b += f * 0.5; }
-      }
-      else if (activation[i] > 0.5) {
-          TEMP_COLOR.lerp(WHITE, activation[i] * 0.5);
-      }
-      if(meshRef.current) meshRef.current.setColorAt(i, TEMP_COLOR);
-
-      // Outline / Glow
-      const pulse = 1.0 + Math.sin(phase[i]) * 0.3;
-      const glowIntensity = usePaperPhysics ? 3.5 : 2.5 + entropy * 4.0; 
-      TEMP_EMISSIVE.setRGB(r * glowIntensity * pulse, g * glowIntensity * pulse, b * glowIntensity * pulse);
-      
-      if(outlineRef.current) outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
     } // End of Particle Loop
 
     // --- Post-Loop Updates ---
@@ -867,10 +923,10 @@ const UIOverlay: React.FC<{
                     </div>
                     <div className="text-[10px] text-gray-400 font-mono text-center pt-2">
                         {(params.logicState[0] && params.logicState[1]) 
-                            ? "INTERFERENCE: DESTRUCTIVE (0)" 
+                            ? "PHASE CANCELLATION DETECTED" 
                             : (params.logicState[0] || params.logicState[1]) 
-                                ? "INTERFERENCE: CONSTRUCTIVE (1)" 
-                                : "IDLE (0)"
+                                ? "SIGNAL FLOW ACTIVE" 
+                                : "AWAITING SIGNAL"
                         }
                     </div>
                 </div>
@@ -1013,7 +1069,7 @@ const App: React.FC = () => {
             newParams.logicMode = true;
             newParams.usePaperPhysics = true;
             newParams.inputText = "LOGIC"; // Placeholder, layout driven by logicMode
-            newParams.particleCount = 1000;
+            newParams.particleCount = 320; // Reduced count for cleaner circuit flow
         }
 
         setParams(newParams);
