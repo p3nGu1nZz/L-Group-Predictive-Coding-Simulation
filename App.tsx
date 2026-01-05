@@ -219,64 +219,122 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   useEffect(() => {
     if (params.paused) return; 
     
-    // --- EXPERIMENT D: INTERFEROMETER APPARATUS ---
+    // --- EXPERIMENT D/E: INTERFEROMETER APPARATUS ---
     if (params.logicMode) {
         const count = params.particleCount;
         data.current.hasTarget.fill(1);
-        
-        // Reset Logic state arrays
         data.current.activation.fill(0);
         data.current.v.fill(0);
         
-        // Split particles into 3 defined channel groups
-        // We ensure strict separation for test reliability
-        const channelSize = Math.floor(count / 3);
+        // --- EXPERIMENT E LAYOUTS ---
+        if (params.gateType === 'HALF_ADDER') {
+             
+             if (params.circuitMode === 'MEMORY_CELL') {
+                 // MEMORY REGISTER LAYOUT
+                 // Region 0: Input Bus (Linear)
+                 // Region 1: Storage Loop (Circular)
+                 const halfSize = Math.floor(count / 2);
+                 for (let i = 0; i < count; i++) {
+                     let group = i < halfSize ? 0 : 1;
+                     data.current.regionID[i] = group;
+                     const t = (i % halfSize) / halfSize;
+                     
+                     let cx=0, cy=0, cz=0;
+                     if (group === 0) {
+                         // Input Bus
+                         cx = -40 + (35 * t);
+                         cy = 10 * Math.sin(t*10); // Data noise
+                         cz = 0;
+                     } else {
+                         // Storage Loop
+                         const theta = t * Math.PI * 2;
+                         const r = 15;
+                         cx = 20 + Math.cos(theta) * r;
+                         cy = Math.sin(theta) * r;
+                         cz = (Math.random() - 0.5) * 2;
+                     }
+                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
+                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
+                 }
+                 return;
+             }
 
+             if (params.circuitMode === 'FULL_ADDER') {
+                 // FULL ADDER LAYOUT (5 Regions: A, B, Cin, Sum, Carry)
+                 const partSize = Math.floor(count / 5);
+                 for (let i=0; i<count; i++) {
+                     let group = Math.floor(i / partSize);
+                     if (group > 4) group = 4;
+                     data.current.regionID[i] = group;
+                     const t = (i % partSize) / partSize;
+                     
+                     let cx=0, cy=0;
+                     // 0: A, 1: B, 2: Cin, 3: Sum, 4: Cout
+                     if (group === 0) { cx = -50 + 40*t; cy = 25; }
+                     else if (group === 1) { cx = -50 + 40*t; cy = 0; }
+                     else if (group === 2) { cx = -50 + 40*t; cy = -25; }
+                     else if (group === 3) { cx = 20 + 30*t; cy = 15; }
+                     else { cx = 20 + 30*t; cy = -15; }
+                     
+                     // Convergence visualization
+                     if (group < 3) cx += t * 10;
+                     
+                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = 0;
+                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = 0;
+                 }
+                 return;
+             }
+
+             // HALF ADDER LAYOUT (Default)
+             const quarterSize = Math.floor(count / 4);
+             for(let i=0; i<count; i++) {
+                 let group = 0;
+                 if (i < quarterSize) group = 0; // Input A
+                 else if (i < quarterSize * 2) group = 1; // Input B
+                 else if (i < quarterSize * 3) group = 2; // Output Sum (XOR)
+                 else group = 3; // Output Carry (AND)
+                 
+                 data.current.regionID[i] = group;
+                 const t = (i % quarterSize) / quarterSize;
+                 
+                 let cx=0, cy=0;
+                 if (group === 0) { cx = -50 + (30 * t); cy = 20; } 
+                 else if (group === 1) { cx = -50 + (30 * t); cy = -20; } 
+                 else if (group === 2) { cx = 20 + (30 * t); cy = 20; if (t < 0.2) cx -= 10 * (0.2-t); } 
+                 else { cx = 20 + (30 * t); cy = -20; }
+                 
+                 cy += (Math.random() - 0.5) * 1.5;
+                 const cz = (Math.random() - 0.5) * 0.5;
+
+                 if (group === 0 || group === 1) { cx = -50 + (50 * t); cy = (group===0 ? 20 : -20) * (1-t*0.5); } 
+                 else { cx = 0 + (50 * t); cy = (group===2 ? 20 : -20) * t; }
+                 
+                 data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
+                 data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
+             }
+             return;
+        }
+
+        // STANDARD LOGIC GATES (3 Regions)
+        const channelSize = Math.floor(count / 3);
         for(let i=0; i<count; i++) {
             let cx=0, cy=0, cz=0;
-            let group = 0; // 0=InputA, 1=InputB, 2=Output
-
+            let group = 0; 
             if (i < channelSize) group = 0; 
             else if (i < channelSize * 2) group = 1; 
             else group = 2;
 
             data.current.regionID[i] = group; 
-
-            // t is normalized distance along the wire (0 to 1)
             const t = (i % channelSize) / channelSize;
             
-            // Build the Interferometer Shape
-            if (group === 0) {
-                 // Input A: Top Curve (Sine Wave)
-                 // Starts Left (-40), Arcs Up, Meets at Center (0)
-                 cx = -40 + (40 * t);
-                 // Ease-in-out curve to meet smoothly at 0
-                 const curve = Math.sin(t * Math.PI); 
-                 cy = 12 * (1-t) + (0 * t); 
-                 cy = (1-t) * 15; // Linear approach for better flow visual
-            } else if (group === 1) {
-                 // Input B: Bottom Curve
-                 cx = -40 + (40 * t);
-                 cy = -(1-t) * 15;
-            } else {
-                 // Output: Straight Line from 0 to 40
-                 cx = 40 * t;
-                 cy = 0;
-            }
-            
-            // Tight constraint on Z to look like a PCB trace
+            if (group === 0) { cx = -40 + (40 * t); cy = (1-t) * 15; } 
+            else if (group === 1) { cx = -40 + (40 * t); cy = -(1-t) * 15; } 
+            else { cx = 40 * t; cy = 0; }
             cz = (Math.random() - 0.5) * 0.5;
-            // Add slight "Wire Thickness" jitter
             cy += (Math.random() - 0.5) * 1.5;
 
-            data.current.target[i*3] = cx;
-            data.current.target[i*3+1] = cy;
-            data.current.target[i*3+2] = cz;
-            
-            // Snap to grid initially
-            data.current.x[i*3] = cx;
-            data.current.x[i*3+1] = cy;
-            data.current.x[i*3+2] = cz;
+            data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
+            data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
         }
         return;
     }
@@ -287,13 +345,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     }
 
     const count = params.particleCount;
-    // Lower density slightly for text to make it cleaner in regions
     const { positions, count: pointCount } = textToPoints(params.inputText, Math.floor(count * 0.8));
     
     data.current.hasTarget.fill(0);
 
-    // Calculate Offset based on Region
-    // Region A (0): x < 0 | Region B (1): x > 0
     let offsetX = 0;
     if (params.targetRegion === 0) offsetX = -35;
     else if (params.targetRegion === 1) offsetX = 35;
@@ -301,14 +356,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     if (pointCount > 0) {
         const targets = [];
         for(let i=0; i<pointCount; i++) {
-            targets.push({ 
-                x: positions[i*3] + offsetX, 
-                y: positions[i*3+1], 
-                z: positions[i*3+2] 
-            });
+            targets.push({ x: positions[i*3] + offsetX, y: positions[i*3+1], z: positions[i*3+2] });
         }
         
-        // Shuffle targets
         for (let i = targets.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [targets[i], targets[j]] = [targets[j], targets[i]];
@@ -324,22 +374,15 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         
         for (let i = 0; i < assignCount; i++) {
             const pid = indices[i];
-            
-            // Region Filter
-            if (params.targetRegion !== -1 && data.current.regionID[pid] !== params.targetRegion) {
-                continue;
-            }
+            if (params.targetRegion !== -1 && data.current.regionID[pid] !== params.targetRegion) continue;
 
             const t = targets[i];
-            data.current.target[pid * 3] = t.x;
-            data.current.target[pid * 3 + 1] = t.y;
-            data.current.target[pid * 3 + 2] = t.z;
+            data.current.target[pid * 3] = t.x; data.current.target[pid * 3 + 1] = t.y; data.current.target[pid * 3 + 2] = t.z;
             data.current.hasTarget[pid] = 1;
             data.current.activation[pid] = 1.0;
         }
     }
-    // Added params.gateType to dependencies to force reset on gate switch
-  }, [params.inputText, params.particleCount, params.targetRegion, params.paused, params.logicMode, params.gateType]);
+  }, [params.inputText, params.particleCount, params.targetRegion, params.paused, params.logicMode, params.gateType, params.circuitMode]);
 
   const maxConnections = params.particleCount * 6;
   const lineGeometry = useMemo(() => {
@@ -366,13 +409,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
     const effectiveChaos = started ? params.chaosMode : false;
     const timeNow = state.clock.elapsedTime;
     
-    // Teacher Algorithm: Thermodynamic Modulation
     let systemTemperature = 0.0;
-    if (teacherFeedback === 1) systemTemperature = 0.0; // Crystallize
-    else if (teacherFeedback === -1) systemTemperature = 1.0; // Agitate
-    else systemTemperature = 0.05; // Ambient
+    if (teacherFeedback === 1) systemTemperature = 0.0; 
+    else if (teacherFeedback === -1) systemTemperature = 1.0; 
+    else systemTemperature = 0.05; 
 
-    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength, logicMode, logicState, gateType } = params;
+    const { equilibriumDistance, stiffness, plasticity, phaseSyncRate, usePaperPhysics, spinCouplingStrength, phaseCouplingStrength, logicMode, logicState, gateType, circuitMode } = params;
     const count = params.particleCount;
     const { x, v, phase, spin, target, hasTarget, regionID, forwardMatrix, activation, delayedActivation, lastActiveTime, hysteresisState } = data.current;
     
@@ -387,33 +429,48 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
     // --- LOGIC MODE: WAVE SUPERPOSITION & INTERFERENCE ---
     if (logicMode) {
-        // We simulate the actual math of Wave Superposition here.
-        // Psi_Output = Psi_A + Psi_B
         
         const A_Active = logicState[0];
         const B_Active = logicState[1];
+        const C_Active = logicState[2];
         
-        // Determine Phase Logic
-        // For XOR: If B is active, it has PI phase shift relative to A
         let phaseA = 0;
-        let phaseB = 0;
-        let isDestructive = false;
+        let phaseB = Math.PI; 
 
-        if (gateType === 'XOR' || gateType === 'XNOR') {
-            phaseB = Math.PI; // 180 deg shift causes cancellation
-            if (A_Active && B_Active) isDestructive = true;
-        }
-
-        // Logic Output Calculation (What the wire *should* carry)
+        // Logic Output Calculation
         let intendedOutput = false;
-         switch (gateType) {
-            case 'AND': intendedOutput = A_Active && B_Active; break;
-            case 'OR': intendedOutput = A_Active || B_Active; break;
-            case 'XOR': intendedOutput = A_Active !== B_Active; break;
-            case 'NAND': intendedOutput = !(A_Active && B_Active); break;
-            case 'NOR': intendedOutput = !(A_Active || B_Active); break;
-            case 'XNOR': intendedOutput = A_Active === B_Active; break;
-            case 'NOT': intendedOutput = !A_Active; break;
+        let intendedSum = false;
+        let intendedCarry = false;
+
+        // HALF ADDER LOGIC
+        if (gateType === 'HALF_ADDER') {
+             if (circuitMode === 'MEMORY_CELL') {
+                 // Nothing standard here, handled in loop
+             } else if (circuitMode === 'FULL_ADDER') {
+                 // Sum = A XOR B XOR Cin
+                 const xorAB = A_Active !== B_Active;
+                 intendedSum = xorAB !== C_Active;
+                 // Cout = (A AND B) OR (Cin AND (A XOR B))
+                 intendedCarry = (A_Active && B_Active) || (C_Active && xorAB);
+             } else {
+                 // Half Adder
+                 intendedSum = A_Active !== B_Active;
+                 intendedCarry = A_Active && B_Active;
+             }
+        } else {
+             // Standard Logic Gates
+             if (gateType === 'XOR' || gateType === 'XNOR') phaseB = Math.PI; 
+             else phaseB = 0; 
+
+             switch (gateType) {
+                case 'AND': intendedOutput = A_Active && B_Active; break;
+                case 'OR': intendedOutput = A_Active || B_Active; break;
+                case 'XOR': intendedOutput = A_Active !== B_Active; break;
+                case 'NAND': intendedOutput = !(A_Active && B_Active); break;
+                case 'NOR': intendedOutput = !(A_Active || B_Active); break;
+                case 'XNOR': intendedOutput = A_Active === B_Active; break;
+                case 'NOT': intendedOutput = !A_Active; break;
+            }
         }
 
         // Iterate Particles
@@ -430,40 +487,118 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             }
 
             const idx3 = i * 3;
-            const px = x[idx3]; // Current X position
+            const px = x[idx3]; 
             
-            // 1. Calculate Local Wave Amplitude (DATA PACKETS)
-            // Signal travels left to right.
-            const k = 0.3; // Spatial frequency (packets per unit length)
-            const w = 12.0; // Temporal frequency (speed)
+            // 1. Calculate Local Wave Amplitude
+            const k = 0.3; 
+            const w = 12.0; 
             const travel = k * px - w * timeNow;
             
             let localAmp = 0;
             let turbulence = 0;
+            let isGolden = false;
 
-            // Pulse Generator: Sharp pulses (Power Sine)
+            // Pulse Generator
             const getPulse = (phaseOffset: number) => {
                  const s = Math.sin(travel + phaseOffset);
-                 return Math.pow((s + 1.0) / 2.0, 8.0); // Sharpen into discrete packets
+                 return Math.pow((s + 1.0) / 2.0, 8.0); 
             };
 
-            if (rid === 0) {
-                // Input A Channel
-                if (A_Active) localAmp = getPulse(phaseA);
+            // --- MODE SPECIFIC PHYSICS ---
+            if (circuitMode === 'MEMORY_CELL' && gateType === 'HALF_ADDER') {
+                // MEMORY REGISTER PHYSICS
+                if (rid === 0) { // Input Line
+                    // Just visualize "Input Pending"
+                    // If Write is happening (logicState[1] = Write Enable simulation maybe? No let's use the explicit buttons)
+                    // We visualize signal flow
+                    localAmp = getPulse(0) * 0.5;
+                } else if (rid === 1) { // Storage Ring
+                    if (params.memoryBit === 1) {
+                        // High Energy Storage - Spin Effect
+                        isGolden = true;
+                        localAmp = 1.0;
+                        
+                        // Add Tangential Velocity to create spin
+                        const r = 15;
+                        const centerX = 20; const centerY = 0;
+                        const dx = x[idx3] - centerX;
+                        const dy = x[idx3+1] - centerY;
+                        
+                        // Tangent (-y, x)
+                        v[idx3] += -dy * 0.01;
+                        v[idx3+1] += dx * 0.01;
+                        
+                        // Keep on ring
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        const push = (15 - dist) * 0.1;
+                        v[idx3] += (dx/dist) * push;
+                        v[idx3+1] += (dy/dist) * push;
+                        
+                    } else {
+                        // Cleared - Static
+                        localAmp = 0;
+                    }
+                }
+            }
+            else if (circuitMode === 'FULL_ADDER' && gateType === 'HALF_ADDER') {
+                 // FULL ADDER PHYSICS
+                 if (rid === 0) { if (A_Active) localAmp = getPulse(0); }
+                 else if (rid === 1) { if (B_Active) localAmp = getPulse(Math.PI); }
+                 else if (rid === 2) { if (C_Active) localAmp = getPulse(0); } // Cin
+                 else if (rid === 3) { // Sum
+                     if (intendedSum) {
+                         localAmp = getPulse(0);
+                     } else if ((A_Active && B_Active && C_Active)) {
+                         // 1+1+1 = 1 (Sum) + 1 (Carry). Constructive!
+                         localAmp = getPulse(0);
+                     } else if ((A_Active && B_Active) || (B_Active && C_Active) || (A_Active && C_Active)) {
+                          // Destructive interference zone
+                          turbulence = 1.0;
+                     }
+                 } else if (rid === 4) { // Carry
+                     if (intendedCarry) {
+                         localAmp = getPulse(0) * 1.5;
+                         isGolden = true;
+                     }
+                 }
             } 
-            else if (rid === 1) {
-                // Input B Channel
-                if (B_Active) localAmp = getPulse(phaseB);
-            } 
-            else if (rid === 2) {
-                // Output Channel
-                
-                // Constructive Interference Check (For AND/OR/XNOR 1,1)
-                const isConstructive = (A_Active && B_Active) && (gateType === 'AND' || gateType === 'OR' || gateType === 'XNOR');
+            else {
+                // STANDARD HALF ADDER / GATES
+                if (rid === 0) {
+                    if (A_Active) localAmp = getPulse(phaseA);
+                } 
+                else if (rid === 1) {
+                    if (B_Active) localAmp = getPulse(phaseB);
+                } 
+                else {
+                    if (gateType === 'HALF_ADDER') {
+                        // Region 2: Sum (XOR Logic)
+                        if (rid === 2) {
+                            if (intendedSum) localAmp = getPulse(0);
+                            if (A_Active && B_Active && Math.abs(px) < 15) turbulence = 1.0;
+                        } 
+                        // Region 3: Carry (AND Logic)
+                        else if (rid === 3) {
+                             if (intendedCarry) {
+                                 localAmp = getPulse(0) * 1.5; 
+                                 isGolden = true;
+                             }
+                        }
+                    } else {
+                        // Standard Gate Output (Region 2)
+                        const isConstructive = (A_Active && B_Active) && (gateType === 'AND' || gateType === 'OR' || gateType === 'XNOR');
+                        const isBiasDriven = intendedOutput && !A_Active && !B_Active;
 
-                if (intendedOutput) {
-                     localAmp = getPulse(0);
-                     if (isConstructive) localAmp *= 1.4; // Boost amplitude for summation
+                        if (intendedOutput) {
+                             localAmp = getPulse(0);
+                             if (isConstructive) localAmp *= 1.4; 
+                             if (isBiasDriven) isGolden = true;
+                        }
+                        
+                        if (gateType === 'XOR' && A_Active && B_Active && Math.abs(px) < 15) {
+                            turbulence = 1.0;
+                        }
+                    }
                 }
             }
 
@@ -472,53 +607,73 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             const targetY = target[idx3+1];
             const targetZ = target[idx3+2];
             
-            // Restore to wire shape (Wire Stiffness)
+            // Wire Stiffness
             v[idx3] += (targetX - x[idx3]) * 0.15;
             v[idx3+1] += (targetY - x[idx3+1]) * 0.15;
             v[idx3+2] += (targetZ - x[idx3+2]) * 0.15;
 
             // Apply Wave Forces
-            if (rid === 2) {
-                 // Output Region
-                 const targetAct = intendedOutput ? 1.0 : 0.0;
-                 activation[i] += (targetAct - activation[i]) * 0.1; // Smooth lerp
+            let inputActive = false;
+            let outputActive = false;
+            
+            if (circuitMode === 'MEMORY_CELL') {
+                if (rid === 1 && params.memoryBit === 1) outputActive = true;
+            } else {
+                if (rid < (circuitMode === 'FULL_ADDER' ? 3 : 2)) inputActive = true;
+                else outputActive = true;
+            }
+            
+            if (inputActive) {
+                 // Simplify check for basic modes
+                 const isActive = (rid===0 && A_Active) || (rid===1 && B_Active) || (rid===2 && circuitMode==='FULL_ADDER' && C_Active);
+                 if (isActive) v[idx3+1] += localAmp * 0.15;
+                 activation[i] += (isActive ? 1.0 : 0.0 - activation[i]) * 0.1;
+            } else {
+                 // Output Regions
+                 let targetAct = 0.0;
+                 if (circuitMode === 'MEMORY_CELL') {
+                     targetAct = (rid === 1 && params.memoryBit === 1) ? 1.0 : 0.0;
+                 } else if (gateType === 'HALF_ADDER') {
+                     if (circuitMode === 'FULL_ADDER') {
+                         if (rid === 3) targetAct = intendedSum ? 1.0 : 0.0;
+                         if (rid === 4) targetAct = intendedCarry ? 1.0 : 0.0;
+                     } else {
+                         if (rid === 2) targetAct = intendedSum ? 1.0 : 0.0;
+                         if (rid === 3) targetAct = intendedCarry ? 1.0 : 0.0;
+                     }
+                 } else {
+                     targetAct = intendedOutput ? 1.0 : 0.0;
+                 }
                  
-                 if (intendedOutput) {
-                     // Packet Flow Visualization
+                 activation[i] += (targetAct - activation[i]) * 0.1;
+                 
+                 // Flow visual
+                 if (activation[i] > 0.1 && circuitMode !== 'MEMORY_CELL') {
                      v[idx3] += localAmp * 0.2 * Math.cos(travel);
                      v[idx3+1] += localAmp * 0.1;
                  }
-            } else {
-                 // Input Regions
-                 const inputActive = (rid === 0 && A_Active) || (rid === 1 && B_Active);
-                 const targetAct = inputActive ? 1.0 : 0.0;
-                 activation[i] += (targetAct - activation[i]) * 0.1;
-                 
-                 if (inputActive) {
-                      v[idx3+1] += localAmp * 0.15;
-                 }
             }
             
-            // 3. XOR Destructive Interference Visuals (The "Collision")
-            if (isDestructive && Math.abs(px) < 12.0) {
-                 turbulence = 1.0;
+            // 3. XOR Destructive Interference Visuals
+            if (turbulence > 0.5) {
+                 const dist = Math.abs(px); 
+                 const damp = Math.max(0, 1.0 - dist / 15.0);
                  
-                 // Radial Ripple Logic
-                 const dist = Math.sqrt(px*px + x[idx3+1]*x[idx3+1]); // Distance from center
-                 const ripple = Math.sin(dist * 1.5 - timeNow * 20.0);
-                 const damp = Math.max(0, 1.0 - dist / 12.0); // Decay at edge of zone
-                 
-                 v[idx3+1] += ripple * damp * 0.8;
-                 v[idx3+2] += Math.cos(timeNow * 30.0 + dist) * damp * 0.5; 
-
+                 v[idx3+1] += Math.sin(timeNow * 20.0) * damp * 0.8;
+                 v[idx3+2] += Math.cos(timeNow * 30.0) * damp * 0.5; 
                  v[idx3] += (Math.random() - 0.5) * 1.5 * damp; 
                  v[idx3+1] += (Math.random() - 0.5) * 1.5 * damp;
             }
 
-            // Damping
-            v[idx3] *= 0.8;
-            v[idx3+1] *= 0.8;
-            v[idx3+2] *= 0.8;
+            // Damping (Special case for Memory Register: No Damping when active!)
+            let dampingFactor = 0.8;
+            if (circuitMode === 'MEMORY_CELL' && rid === 1 && params.memoryBit === 1) {
+                dampingFactor = 0.99; // Inertia conservation for trap loop
+            }
+            
+            v[idx3] *= dampingFactor;
+            v[idx3+1] *= dampingFactor;
+            v[idx3+2] *= dampingFactor;
 
             x[idx3] += v[idx3];
             x[idx3+1] += v[idx3+1];
@@ -526,7 +681,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             // 4. Render Updates
             TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
-            // Scale increases with pulse intensity
             const pulseScale = activation[i] > 0.5 ? localAmp * 0.3 : 0;
             const s = 0.2 + pulseScale + activation[i] * 0.1;
             TEMP_OBJ.scale.set(s, s, s);
@@ -535,41 +689,41 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             // Coloring
             if (turbulence > 0.5) {
-                // Interference Turbulence Pattern (Glitch / Collision)
                 const noise = Math.random();
                 if (noise > 0.92) TEMP_COLOR.setHex(0xFFFFFF); // White Spark
                 else if (noise > 0.6) TEMP_COLOR.setHex(0xFF3300); // Neon Orange
                 else if (noise > 0.3) TEMP_COLOR.setHex(0xFF0000); // Pure Red
                 else TEMP_COLOR.setHex(0x220000); // Void Dark Red
             } else if (activation[i] > 0.1) {
-                // Bias Logic for inverted gates
-                const isBiasDriven = intendedOutput && !A_Active && !B_Active;
-                const isConstructive = (A_Active && B_Active) && (gateType === 'AND' || gateType === 'OR' || gateType === 'XNOR');
-
-                // Signal Flow - Bright Packets on Dim Wire
                 const brightness = activation[i];
-                // Pulse emphasis
                 const pulseBoost = localAmp * 0.8; 
                 const t = Math.min(1.0, brightness + pulseBoost);
                 
                 if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
-                else if (rid === 1) TEMP_COLOR.setRGB(t, 0, t); // Magenta
-                else if (rid === 2) {
-                    if (isBiasDriven) {
-                         // Bias Flow (Gold / VCC Power Rail Effect)
+                else if (rid === 1) {
+                    if (circuitMode === 'MEMORY_CELL') {
+                        TEMP_COLOR.setHex(0xFFD700); // Gold for memory
+                        TEMP_COLOR.lerp(WHITE, localAmp);
+                    } else {
+                        TEMP_COLOR.setRGB(t, 0, t); // Magenta
+                    }
+                }
+                else if (rid >= 2) {
+                    if (isGolden) {
+                         // Bias / Carry Flow (Gold)
                          TEMP_COLOR.setHex(0xFFD700); 
                          TEMP_COLOR.lerp(WHITE, localAmp * 0.6);
-                    } else if (isConstructive) {
-                         // Constructive Summation (Super Bright Cyan/White)
-                         TEMP_COLOR.setRGB(0.5, 1.0, 1.0);
-                         TEMP_COLOR.lerp(WHITE, localAmp);
+                    } else if (gateType === 'HALF_ADDER') {
+                         // Sum Output (Green)
+                         TEMP_COLOR.setRGB(0.1, t, 0.2);
+                         if (localAmp > 0.5) TEMP_COLOR.lerp(WHITE, localAmp * 0.4);
                     } else {
-                         // Standard Output Green
+                         // Generic Output
                          TEMP_COLOR.setRGB(0.1, t, 0.2); 
+                         if (localAmp > 0.5) TEMP_COLOR.lerp(WHITE, localAmp * 0.5);
                     }
                 }
                 
-                // Bloom White for Packet Peaks
                 if (pulseBoost > 0.6) TEMP_COLOR.lerp(WHITE, (pulseBoost - 0.6) * 2.0);
 
             } else {
@@ -579,14 +733,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             
             if(outlineRef.current) {
                 outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
-                // Bloom intensity
                 if (turbulence > 0.5) TEMP_EMISSIVE.setRGB(2, 0.5, 0);
                 else TEMP_EMISSIVE.copy(TEMP_COLOR).multiplyScalar(1.5 + localAmp * 2.0);
                 outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
             }
         }
         
-        // Update instances
         if (meshRef.current) {
             meshRef.current.instanceMatrix.needsUpdate = true;
             if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
@@ -595,8 +747,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             outlineRef.current.instanceMatrix.needsUpdate = true;
             if (outlineRef.current.instanceColor) outlineRef.current.instanceColor.needsUpdate = true;
         }
-        
-        // Skip spatial hashing / lines update in simplified Logic Mode
         linesRef.current.geometry.setDrawRange(0, 0);
         return; 
     }
@@ -901,12 +1051,56 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   );
 };
 
-const LogicGateOverlay: React.FC<{ gateType: string }> = ({ gateType }) => {
+const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({ gateType, circuitMode }) => {
   const points = useMemo(() => {
-     // Mach-Zehnder Interferometer Shape
      const shape = [];
      
-     // Top Arm (Curve)
+     if (gateType === 'HALF_ADDER') {
+         if (circuitMode === 'MEMORY_CELL') {
+             // Memory Latch (Straight line to Circle)
+             shape.push([new THREE.Vector3(-40, 0, 0), new THREE.Vector3(5, 0, 0)]);
+             
+             // Circle approximation
+             const circle = [];
+             for(let i=0; i<=32; i++) {
+                 const theta = (i/32) * Math.PI * 2;
+                 circle.push(new THREE.Vector3(20 + Math.cos(theta)*15, Math.sin(theta)*15, 0));
+             }
+             shape.push(circle);
+             return shape;
+         }
+
+         if (circuitMode === 'FULL_ADDER') {
+             // A
+             shape.push([new THREE.Vector3(-50, 25, 0), new THREE.Vector3(0, 25, 0)]);
+             // B
+             shape.push([new THREE.Vector3(-50, 0, 0), new THREE.Vector3(0, 0, 0)]);
+             // Cin
+             shape.push([new THREE.Vector3(-50, -25, 0), new THREE.Vector3(0, -25, 0)]);
+             
+             // Sum
+             shape.push([new THREE.Vector3(0, 25, 0), new THREE.Vector3(50, 15, 0)]);
+             // Cout
+             shape.push([new THREE.Vector3(0, -25, 0), new THREE.Vector3(50, -15, 0)]);
+             return shape;
+         }
+
+         // Half Adder Schematic
+         // Top Line (Input A -> Sum)
+         shape.push([new THREE.Vector3(-50, 20, 0), new THREE.Vector3(0, 20, 0)]);
+         shape.push([new THREE.Vector3(0, 20, 0), new THREE.Vector3(20, 20, 0)]);
+         // Bottom Line (Input B -> Carry)
+         shape.push([new THREE.Vector3(-50, -20, 0), new THREE.Vector3(0, -20, 0)]);
+         shape.push([new THREE.Vector3(0, -20, 0), new THREE.Vector3(20, -20, 0)]);
+         
+         // Cross Connections (Visual only)
+         shape.push([new THREE.Vector3(-20, 20, 0), new THREE.Vector3(-20, -20, 0)]);
+         shape.push([new THREE.Vector3(-10, -20, 0), new THREE.Vector3(-10, 20, 0)]);
+         
+         return shape;
+     }
+
+     // Mach-Zehnder Interferometer Shape (Standard Gate)
      const topCurve = new THREE.CatmullRomCurve3([
          new THREE.Vector3(-40, 15, 0),
          new THREE.Vector3(-20, 15, 0),
@@ -914,7 +1108,6 @@ const LogicGateOverlay: React.FC<{ gateType: string }> = ({ gateType }) => {
      ]);
      shape.push(topCurve.getPoints(20));
 
-     // Bottom Arm (Curve)
      const bottomCurve = new THREE.CatmullRomCurve3([
          new THREE.Vector3(-40, -15, 0),
          new THREE.Vector3(-20, -15, 0),
@@ -922,28 +1115,54 @@ const LogicGateOverlay: React.FC<{ gateType: string }> = ({ gateType }) => {
      ]);
      shape.push(bottomCurve.getPoints(20));
 
-     // Output Straight
      shape.push([new THREE.Vector3(0, 0, 0), new THREE.Vector3(40, 0, 0)]);
 
      return shape;
-  }, []);
+  }, [gateType, circuitMode]);
 
   return (
       <group position={[0, 0, 0]}>
           {points.map((p, i) => (
               <Line key={i} points={p} color="cyan" opacity={0.2} transparent lineWidth={1} />
           ))}
-          <Text position={[-42, 15, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
-          <Text position={[-42, -15, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
-          <Text position={[42, 0, 0]} fontSize={2} color="white" anchorX="left" anchorY="middle">OUT</Text>
-          <Text position={[0, 8, 0]} fontSize={1.5} color="gray" anchorX="center" anchorY="middle">{gateType} GATE</Text>
+          {gateType === 'HALF_ADDER' && circuitMode === 'MEMORY_CELL' && (
+              <>
+                 <Text position={[-42, 5, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">DATA IN</Text>
+                 <Text position={[20, 0, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">1-BIT STORAGE</Text>
+              </>
+          )}
+          {gateType === 'HALF_ADDER' && circuitMode === 'FULL_ADDER' && (
+              <>
+                <Text position={[-52, 25, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
+                <Text position={[-52, 0, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
+                <Text position={[-52, -25, 0]} fontSize={2} color="#00FF00" anchorX="right" anchorY="middle">C-IN</Text>
+                <Text position={[52, 15, 0]} fontSize={2} color="#00FFFF" anchorX="left" anchorY="middle">SUM</Text>
+                <Text position={[52, -15, 0]} fontSize={2} color="#FFD700" anchorX="left" anchorY="middle">C-OUT</Text>
+              </>
+          )}
+          {gateType === 'HALF_ADDER' && circuitMode === 'HALF_ADDER' && (
+              <>
+                <Text position={[-52, 20, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
+                <Text position={[-52, -20, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
+                <Text position={[22, 20, 0]} fontSize={2} color="#00FF00" anchorX="left" anchorY="middle">SUM (S)</Text>
+                <Text position={[22, -20, 0]} fontSize={2} color="#FFD700" anchorX="left" anchorY="middle">CARRY (C)</Text>
+              </>
+          )}
+          {gateType !== 'HALF_ADDER' && (
+              <>
+                <Text position={[-42, 15, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
+                <Text position={[-42, -15, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
+                <Text position={[42, 0, 0]} fontSize={2} color="white" anchorX="left" anchorY="middle">OUT</Text>
+              </>
+          )}
+          <Text position={[0, 30, 0]} fontSize={1.5} color="gray" anchorX="center" anchorY="middle">{circuitMode.replace('_', ' ')}</Text>
       </group>
   )
 }
 
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
     if (!params.showRegions && !params.logicMode) return null;
-    if (params.logicMode) return <LogicGateOverlay gateType={params.gateType} />;
+    if (params.logicMode) return <LogicGateOverlay gateType={params.gateType} circuitMode={params.circuitMode} />;
     
     return (
         <group>
@@ -959,16 +1178,18 @@ const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
 
 // --- UI Components ---
 
-const TruthTable: React.FC<{ a: boolean, b: boolean, gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT' }> = ({ a, b, gateType }) => {
-    const rowClass = (ra: boolean, rb: boolean) => {
+const TruthTable: React.FC<{ a: boolean, b: boolean, c: boolean, gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT' | 'HALF_ADDER', circuitMode: string }> = ({ a, b, c, gateType, circuitMode }) => {
+    const rowClass = (ra: boolean, rb: boolean, rc?: boolean) => {
         // For NOT gate, we only care about 'a' matching
         if (gateType === 'NOT') {
             return (a === ra) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
         }
+        if (circuitMode === 'FULL_ADDER') {
+             return (a === ra && b === rb && c === !!rc) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
+        }
         return (a === ra && b === rb) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
     }
     
-    // Logic Helpers
     const getOut = (vA: boolean, vB: boolean) => {
         switch(gateType) {
             case 'AND': return (vA && vB) ? 1 : 0;
@@ -982,7 +1203,75 @@ const TruthTable: React.FC<{ a: boolean, b: boolean, gateType: 'AND' | 'OR' | 'X
         }
     }
 
-    // Custom Layout for NOT gate (2 rows only)
+    if (gateType === 'HALF_ADDER') {
+        if (circuitMode === 'MEMORY_CELL') return null; // No truth table for Register
+
+        if (circuitMode === 'FULL_ADDER') {
+            const getSum = (vA: boolean, vB: boolean, vC: boolean) => ((vA !== vB) !== vC) ? 1 : 0;
+            const getCarry = (vA: boolean, vB: boolean, vC: boolean) => ((vA && vB) || (vC && (vA !== vB))) ? 1 : 0;
+            
+            return (
+                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                     <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Full Adder Truth Table</div>
+                     <div className="grid grid-cols-5 gap-1 text-[10px] font-mono text-center">
+                        <div className="text-gray-400 font-bold pb-1">A</div>
+                        <div className="text-gray-400 font-bold pb-1">B</div>
+                        <div className="text-gray-400 font-bold pb-1">Cin</div>
+                        <div className="text-green-500 font-bold pb-1">S</div>
+                        <div className="text-yellow-500 font-bold pb-1">C</div>
+
+                        <div className={rowClass(false, false, false)}>0</div><div className={rowClass(false, false, false)}>0</div><div className={rowClass(false, false, false)}>0</div><div>0</div><div>0</div>
+                        <div className={rowClass(false, false, true)}>0</div><div className={rowClass(false, false, true)}>0</div><div className={rowClass(false, false, true)}>1</div><div>1</div><div>0</div>
+                        <div className={rowClass(false, true, false)}>0</div><div className={rowClass(false, true, false)}>1</div><div className={rowClass(false, true, false)}>0</div><div>1</div><div>0</div>
+                        <div className={rowClass(false, true, true)}>0</div><div className={rowClass(false, true, true)}>1</div><div className={rowClass(false, true, true)}>1</div><div>0</div><div>1</div>
+                        <div className={rowClass(true, false, false)}>1</div><div className={rowClass(true, false, false)}>0</div><div className={rowClass(true, false, false)}>0</div><div>1</div><div>0</div>
+                        <div className={rowClass(true, false, true)}>1</div><div className={rowClass(true, false, true)}>0</div><div className={rowClass(true, false, true)}>1</div><div>0</div><div>1</div>
+                        <div className={rowClass(true, true, false)}>1</div><div className={rowClass(true, true, false)}>1</div><div className={rowClass(true, true, false)}>0</div><div>0</div><div>1</div>
+                        <div className={rowClass(true, true, true)}>1</div><div className={rowClass(true, true, true)}>1</div><div className={rowClass(true, true, true)}>1</div><div>1</div><div>1</div>
+                     </div>
+                 </div>
+            )
+        }
+
+        const getSum = (vA: boolean, vB: boolean) => (vA !== vB) ? 1 : 0;
+        const getCarry = (vA: boolean, vB: boolean) => (vA && vB) ? 1 : 0;
+
+        return (
+            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Arithmetic Truth Table</div>
+                <div className="grid grid-cols-4 gap-1 text-xs font-mono text-center">
+                    <div className="text-gray-400 font-bold pb-1">A</div>
+                    <div className="text-gray-400 font-bold pb-1">B</div>
+                    <div className="text-green-500 font-bold pb-1">S</div>
+                    <div className="text-yellow-500 font-bold pb-1">C</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getSum(false,false)}</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getCarry(false,false)}</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>0</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getSum(false,true)}</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getCarry(false,true)}</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>0</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getSum(true,false)}</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getCarry(true,false)}</div>
+
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getSum(true,true)}</div>
+                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getCarry(true,true)}</div>
+                </div>
+                <div className="text-[10px] text-gray-500 text-center mt-2 border-t border-gray-800 pt-1">
+                     RESULT: {getCarry(a,b)}{getSum(a,b)} ({(a?1:0) + (b?1:0)})
+                </div>
+            </div>
+        )
+    }
+
     if (gateType === 'NOT') {
          return (
             <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
@@ -1071,6 +1360,12 @@ const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart })
                         <div className="text-xl font-bold text-white">LOGIC CIRCUITS</div>
                         <div className="text-xs text-gray-500 mt-2 font-mono">Quantum Gates: XOR, AND, OR, NAND...</div>
                     </button>
+
+                    <button onClick={() => onStart('adder')} className="text-left p-4 border border-gray-700 hover:border-orange-400 hover:bg-orange-900/20 transition-all group">
+                        <div className="text-orange-400 font-bold tracking-widest text-xs mb-1 group-hover:text-orange-300">EXPERIMENT E</div>
+                        <div className="text-xl font-bold text-white">CPU BUILDING BLOCKS</div>
+                        <div className="text-xs text-gray-500 mt-2 font-mono">Adders, Registers, and Memory Latching.</div>
+                    </button>
                 </div>
             </div>
         </div>
@@ -1114,15 +1409,17 @@ const UIOverlay: React.FC<{
                 </div>
             )
         }
-        if (mode === 'logic') {
+        if (mode === 'logic' || mode === 'adder') {
             return (
                 <div className="mt-4 space-y-2">
+                    {mode === 'logic' && (
+                    <>
                     <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">GATE TYPE SELECTION</div>
                     <div className="grid grid-cols-4 gap-1 mb-3">
                          {['AND', 'OR', 'XOR', 'NOT'].map((g) => (
                              <button
                                 key={g}
-                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false]}))}
+                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false, false]}))}
                                 className={`py-2 text-[10px] font-bold border transition-all ${params.gateType === g ? 'bg-red-500 text-black border-red-400' : 'bg-black text-gray-500 border-gray-700 hover:border-gray-500'}`}
                              >
                                  {g}
@@ -1133,71 +1430,117 @@ const UIOverlay: React.FC<{
                          {['NAND', 'NOR', 'XNOR'].map((g) => (
                              <button
                                 key={g}
-                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false]}))}
+                                onClick={() => setParams((p: any) => ({...p, gateType: g, logicState: [false, false, false]}))}
                                 className={`py-2 text-[10px] font-bold border transition-all ${params.gateType === g ? 'bg-red-500 text-black border-red-400' : 'bg-black text-gray-500 border-gray-700 hover:border-gray-500'}`}
                              >
                                  {g}
                              </button>
                          ))}
                     </div>
+                    </>
+                    )}
+
+                    {mode === 'adder' && (
+                        <>
+                        <div className="text-xs text-orange-500 font-bold tracking-widest border-b border-orange-900 pb-1">COMPONENT TYPE</div>
+                        <div className="grid grid-cols-3 gap-1 mb-3">
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'HALF_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'HALF_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>HALF ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'FULL_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'FULL_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>FULL ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'MEMORY_CELL', loopActive: false, memoryBit: 0}))} className={`py-2 text-[10px] font-bold border ${params.circuitMode === 'MEMORY_CELL' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>REGISTER</button>
+                        </div>
+                        </>
+                    )}
 
                     <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">CIRCUIT CONTROLS</div>
-                    <div className="grid grid-cols-2 gap-2">
-                         <button 
-                            onClick={() => setParams((p: any) => ({...p, logicState: [!p.logicState[0], p.logicState[1]]}))}
-                            className={`p-3 text-xs font-bold border transition-all ${params.logicState[0] ? 'bg-cyan-500 text-black border-cyan-400' : 'bg-black text-gray-500 border-gray-700'}`}
-                         >
-                             INPUT A: {params.logicState[0] ? "1" : "0"}
-                         </button>
-                         
-                         {params.gateType !== 'NOT' && (
+                    
+                    {params.circuitMode === 'MEMORY_CELL' ? (
+                        <div className="space-y-2 mt-2">
+                             <div className="flex gap-2">
+                                <button 
+                                    disabled={params.loopActive}
+                                    onClick={() => setParams((p: any) => ({...p, memoryBit: 1}))}
+                                    className={`flex-1 py-3 text-xs font-bold border transition-all ${params.memoryBit === 1 ? 'bg-amber-500 text-black border-amber-400' : 'bg-black text-gray-400 border-gray-700 hover:border-amber-500'} ${params.loopActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    WRITE 1
+                                </button>
+                                <button 
+                                    disabled={params.loopActive}
+                                    onClick={() => setParams((p: any) => ({...p, memoryBit: 0}))}
+                                    className={`flex-1 py-3 text-xs font-bold border transition-all ${params.memoryBit === 0 ? 'bg-red-900/30 text-red-400 border-red-500' : 'bg-black text-gray-400 border-gray-700 hover:border-red-500'} ${params.loopActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    CLEAR (0)
+                                </button>
+                             </div>
+                             <div className="p-2 bg-black/60 border border-gray-800 text-center relative">
+                                 <div className="text-[10px] text-gray-500">REGISTER STATE</div>
+                                 <div className={`text-3xl font-bold font-mono ${params.memoryBit === 1 ? "text-amber-500 drop-shadow-[0_0_8px_rgba(245,158,11,0.8)]" : "text-gray-700"}`}>
+                                    {params.memoryBit === 1 ? "LATCHED" : "EMPTY"}
+                                 </div>
+                             </div>
+                             {/* Memory Loop Button */}
                              <button 
-                                onClick={() => setParams((p: any) => ({...p, logicState: [p.logicState[0], !p.logicState[1]]}))}
-                                className={`p-3 text-xs font-bold border transition-all ${params.logicState[1] ? 'bg-pink-500 text-black border-pink-400' : 'bg-black text-gray-500 border-gray-700'}`}
+                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive, memoryBit: 0}))}
+                                className={`w-full py-2 text-xs font-bold border transition-all mt-2 ${params.loopActive ? 'bg-amber-900/40 border-amber-500 text-amber-200 animate-pulse' : 'bg-gray-900 border-gray-600 text-gray-400 hover:border-gray-400'}`}
                              >
-                                 INPUT B: {params.logicState[1] ? "1" : "0"}
+                                {params.loopActive ? "RUNNING REGISTER TEST..." : "RUN MEMORY TEST LOOP"}
                              </button>
-                         )}
-                         {params.gateType === 'NOT' && (
-                              <div className="p-3 text-xs font-bold border border-gray-800 text-gray-700 bg-black italic">
-                                  N/A
-                              </div>
-                         )}
-                    </div>
+                        </div>
+                    ) : (
+                        <>
+                        <div className="grid grid-cols-2 gap-2">
+                             <button 
+                                disabled={params.loopActive}
+                                onClick={() => setParams((p: any) => ({...p, logicState: [!p.logicState[0], p.logicState[1], p.logicState[2]]}))}
+                                className={`p-3 text-xs font-bold border transition-all ${params.logicState[0] ? 'bg-cyan-500 text-black border-cyan-400' : 'bg-black text-gray-500 border-gray-700'} ${params.loopActive ? 'opacity-50' : ''}`}
+                             >
+                                 INPUT A: {params.logicState[0] ? "1" : "0"}
+                             </button>
+                             
+                             {params.gateType !== 'NOT' && (
+                                 <button 
+                                    disabled={params.loopActive}
+                                    onClick={() => setParams((p: any) => ({...p, logicState: [p.logicState[0], !p.logicState[1], p.logicState[2]]}))}
+                                    className={`p-3 text-xs font-bold border transition-all ${params.logicState[1] ? 'bg-pink-500 text-black border-pink-400' : 'bg-black text-gray-500 border-gray-700'} ${params.loopActive ? 'opacity-50' : ''}`}
+                                 >
+                                     INPUT B: {params.logicState[1] ? "1" : "0"}
+                                 </button>
+                             )}
+                             
+                             {params.circuitMode === 'FULL_ADDER' && (
+                                  <button 
+                                    disabled={params.loopActive}
+                                    onClick={() => setParams((p: any) => ({...p, logicState: [p.logicState[0], p.logicState[1], !p.logicState[2]]}))}
+                                    className={`p-3 text-xs font-bold border transition-all ${params.logicState[2] ? 'bg-green-500 text-black border-green-400' : 'bg-black text-gray-500 border-gray-700'} col-span-2 ${params.loopActive ? 'opacity-50' : ''}`}
+                                 >
+                                     CARRY IN: {params.logicState[2] ? "1" : "0"}
+                                 </button>
+                             )}
+                        </div>
 
-                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} gateType={params.gateType} />
+                        {/* Logic Loop Button */}
+                        <div className="mt-3 border-t border-gray-800 pt-3">
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive, logicState: [false,false,false]}))}
+                                className={`w-full py-2 text-xs font-bold border transition-all ${params.loopActive ? 'bg-cyan-900/40 border-cyan-500 text-cyan-200 animate-pulse' : 'bg-gray-900 border-gray-600 text-gray-400 hover:border-gray-400'}`}
+                             >
+                                {params.loopActive ? "STOP SIMULATION LOOP" : "RUN SIMULATION LOOP"}
+                             </button>
+                             {params.loopActive && (
+                                 <div className="text-[9px] font-mono text-cyan-400 text-center mt-1">
+                                     SEQUENCE STATUS: {params.circuitMode === 'HALF_ADDER' ? `Cycle ${(params.logicState[0]?2:0) + (params.logicState[1]?1:0)}/4` : 'Cycling 8 States...'}
+                                 </div>
+                             )}
+                        </div>
+                        </>
+                    )}
+
+                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} c={params.logicState[2]} gateType={params.gateType} circuitMode={params.circuitMode} />
 
                     <div className="text-[10px] text-gray-400 font-mono text-center pt-2 h-4">
-                        {/* Dynamic Status Text based on Gate */}
                         {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHYSICS: DESTRUCTIVE INTERFERENCE" : ""}
                         {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "PHYSICS: CONSTRUCTIVE WAVE SUM" : ""}
-                        {(params.gateType === 'NAND' || params.gateType === 'NOR') && !params.logicState[0] && !params.logicState[1] ? "PHYSICS: BIAS FLOW (UNOPPOSED)" : ""}
-                        {params.gateType === 'NOT' && !params.logicState[0] ? "PHYSICS: BIAS FLOW" : ""}
-                    </div>
-
-                     {/* Test Runner UI */}
-                    <div className="border-t border-gray-800 pt-3 mt-3">
-                         <button 
-                            onClick={onRunTests}
-                            disabled={isTesting}
-                            className={`w-full py-2 text-xs font-bold border ${isTesting ? 'border-gray-600 text-gray-500 cursor-not-allowed' : 'border-cyan-500 text-cyan-400 hover:bg-cyan-900/40'}`}
-                         >
-                            {isTesting ? "RUNNING DIAGNOSTICS..." : `TEST ${params.gateType} LOGIC`}
-                         </button>
-                         
-                         {testResults.length > 0 && (
-                             <div className="mt-2 space-y-1">
-                                 {testResults.map((res, i) => (
-                                     <div key={i} className="flex justify-between items-center text-[10px] font-mono bg-black/40 p-1 px-2 border-l-2 border-gray-700">
-                                         <span className="text-gray-400">{res.testName}</span>
-                                         <div className="flex items-center gap-2">
-                                             <span className="text-gray-500">{res.details}</span>
-                                             <span className={`font-bold ${res.status === 'PASS' ? 'text-green-400' : 'text-red-500'}`}>{res.status}</span>
-                                         </div>
-                                     </div>
-                                 ))}
-                             </div>
-                         )}
+                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 1 ? "PHYSICS: UNDAMPED PARTICLE TRAP (LATCH)" : ""}
+                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 0 ? "PHYSICS: HIGH FRICTION (CLEAR)" : ""}
                     </div>
                 </div>
             )
@@ -1251,7 +1594,7 @@ const UIOverlay: React.FC<{
                             value={params.inputText} 
                             onChange={(e) => setParams({...params, inputText: e.target.value.toUpperCase()})}
                             className="bg-black border border-gray-700 text-right text-xs text-white p-1 w-24 focus:border-cyan-500 outline-none"
-                            disabled={mode === 'temporal' || mode === 'logic'}
+                            disabled={mode === 'temporal' || mode === 'logic' || mode === 'adder'}
                         />
                      </div>
                      <div className="flex justify-between items-center">
@@ -1323,6 +1666,58 @@ const App: React.FC = () => {
     const statsRef = useRef<SystemStats>({ meanError: 0, meanSpeed: 0, energy: 0, fps: 0, temperature: 0, isStable: false, trainingProgress: 0, phaseOrder: 0, spinOrder: 0, entropy: 0, patternMatch: 0 });
     const spatialRefs = useRef({ neighborList: new Int32Array(0), neighborCounts: new Int32Array(0), gridHead: new Int32Array(4096).fill(-1), gridNext: new Int32Array(0), frameCounter: 0 });
   
+    // --- EXPERIMENT E LOOP LOGIC ---
+    useEffect(() => {
+        if (!params.loopActive || params.gateType !== 'HALF_ADDER') return;
+
+        let cycle = 0;
+        let intervalTime = 2000;
+        
+        // Loop Logic based on Circuit Mode
+        const loopFunction = () => {
+            if (params.circuitMode === 'MEMORY_CELL') {
+                 // Register Loop: Write 1 -> Hold -> Clear -> Hold
+                 setParams(current => {
+                     let nextBit = current.memoryBit;
+                     // Simple state machine via cycle counter (0-3)
+                     if (cycle === 0) nextBit = 1; // Write
+                     if (cycle === 1) nextBit = 1; // Hold
+                     if (cycle === 2) nextBit = 0; // Clear
+                     if (cycle === 3) nextBit = 0; // Hold
+                     
+                     return { ...current, memoryBit: nextBit };
+                 });
+                 cycle = (cycle + 1) % 4;
+            } 
+            else if (params.circuitMode === 'FULL_ADDER') {
+                 // Full Adder Loop: Iterate all 8 binary states
+                 setParams(current => {
+                     // Convert cycle (0-7) to binary inputs
+                     const a = (cycle & 4) !== 0;
+                     const b = (cycle & 2) !== 0;
+                     const c = (cycle & 1) !== 0;
+                     return { ...current, logicState: [a, b, c] };
+                 });
+                 cycle = (cycle + 1) % 8;
+            }
+            else {
+                 // Half Adder Loop: Iterate 4 states (00, 01, 10, 11)
+                 setParams(current => {
+                     const a = (cycle & 2) !== 0;
+                     const b = (cycle & 1) !== 0;
+                     return { ...current, logicState: [a, b, false] };
+                 });
+                 cycle = (cycle + 1) % 4;
+            }
+        };
+
+        const interval = setInterval(loopFunction, intervalTime);
+        loopFunction(); // Run immediate first step
+
+        return () => clearInterval(interval);
+    }, [params.loopActive, params.gateType, params.circuitMode]);
+
+
     const handleStart = (selectedMode: string) => {
         setMode(selectedMode);
         
@@ -1344,6 +1739,16 @@ const App: React.FC = () => {
             newParams.usePaperPhysics = true;
             newParams.inputText = "LOGIC"; // Placeholder, layout driven by logicMode
             newParams.particleCount = 300; // REDUCED COUNT for cleaner physics match
+        } else if (selectedMode === 'adder') {
+            newParams.logicMode = true;
+            newParams.usePaperPhysics = true;
+            newParams.gateType = 'HALF_ADDER';
+            newParams.inputText = "ADDER";
+            newParams.particleCount = 400; // Increased for complex layout
+            newParams.accumulator = 0;
+            newParams.loopActive = false;
+            newParams.circuitMode = 'HALF_ADDER';
+            newParams.memoryBit = 0;
         }
 
         setParams(newParams);
@@ -1360,15 +1765,20 @@ const App: React.FC = () => {
         setTestResults([]);
         
         // Ensure starting quiet
-        setParams(p => ({ ...p, logicState: [false, false] }));
+        setParams(p => ({ ...p, logicState: [false, false, false] }));
         await new Promise(resolve => setTimeout(resolve, 500));
     
         // Capture count from current params to ensure consistency
         const count = params.particleCount;
-        const channelSize = Math.floor(count / 3);
         const currentGate = params.gateType;
 
         const getExpected = (a: boolean, b: boolean) => {
+             // For Half Adder test, we only test CARRY for now as a simple pass/fail, or Sum
+             // Let's test the primary function of the gate.
+             // If gate is Half Adder, we test the Carry bit for simplicity in this generic test runner
+             // or we ideally check both.
+             if (currentGate === 'HALF_ADDER') return (a && b) ? 1.0 : 0.0; // Test Carry
+
             switch(currentGate) {
                 case 'AND': return (a && b) ? 1.0 : 0.0;
                 case 'OR': return (a || b) ? 1.0 : 0.0;
@@ -1406,20 +1816,24 @@ const App: React.FC = () => {
             const expectedVal = getExpected(c.a, c.b);
 
             // 1. Set Input
-            setParams(p => ({ ...p, logicState: [c.a, c.b] }));
+            setParams(p => ({ ...p, logicState: [c.a, c.b, false] }));
             
             // 2. Wait for signal propagation (simulated)
             await new Promise(resolve => setTimeout(resolve, 1200));
     
-            // 3. Measure Output Region (Region 2)
+            // 3. Measure Output Region
             let totalAct = 0;
             let pCount = 0;
-            // Region 2 starts at index 2 * channelSize
-            const startIdx = channelSize * 2;
             
-            for (let i = startIdx; i < count; i++) {
-                 totalAct += dataRef.current.activation[i];
-                 pCount++;
+            // Determine region to measure
+            let targetRegion = 2;
+            if (currentGate === 'HALF_ADDER') targetRegion = 3; // Measure Carry
+            
+            for (let i = 0; i < count; i++) {
+                 if (dataRef.current.regionID[i] === targetRegion) {
+                     totalAct += dataRef.current.activation[i];
+                     pCount++;
+                 }
             }
             
             const avg = pCount > 0 ? totalAct / pCount : 0;
@@ -1446,7 +1860,7 @@ const App: React.FC = () => {
     
         setIsTesting(false);
         // Reset inputs
-        setParams(p => ({ ...p, logicState: [false, false] }));
+        setParams(p => ({ ...p, logicState: [false, false, false] }));
     };
 
     return (

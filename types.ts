@@ -33,8 +33,14 @@ export interface SimulationParams {
   
   // Logic Experiment
   logicMode: boolean;
-  logicState: [boolean, boolean]; // [Input A, Input B]
-  gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT'; // Logic Circuit Mode
+  logicState: [boolean, boolean, boolean]; // [Input A, Input B, Input C(Carry)]
+  gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT' | 'HALF_ADDER'; // Logic Circuit Mode
+  
+  // Experiment E Loop & Modes
+  loopActive: boolean;
+  accumulator: number;
+  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'MEMORY_CELL'; // New Sub-modes for E
+  memoryBit: number; // 0 or 1 for the Register
 }
 
 export interface ParticleData {
@@ -129,6 +135,11 @@ export const DEFAULT_PARAMS: SimulationParams = {
   phaseCouplingStrength: 1.0,
   
   logicMode: false,
-  logicState: [false, false],
-  gateType: 'XOR'
+  logicState: [false, false, false],
+  gateType: 'XOR',
+  
+  loopActive: false,
+  accumulator: 0,
+  circuitMode: 'HALF_ADDER',
+  memoryBit: 0
 };

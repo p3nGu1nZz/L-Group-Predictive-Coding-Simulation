@@ -1,4 +1,5 @@
 
+
 export interface InfoContent {
     title: string;
     summary: string;
@@ -64,6 +65,18 @@ export const EXPERIMENT_INFO: Record<string, InfoContent> = {
             "Toggle Input B (Right) ON. Observe the center region glow.",
             "Toggle BOTH ON. Observe the center region fade (Destructive Interference).",
             "This proves the system functions as a morphological XOR gate."
+        ]
+    },
+    adder: {
+        title: "Experiment E: CPU Building Blocks",
+        summary: "A suite of circuits demonstrating how particle waves can form a CPU: Half Adder, Full Adder, and Register Memory.",
+        importance: "Computers are built from two things: Logic (Adders) and Memory (Registers). This experiment proves our particle system can do both.",
+        demonstration: "Select a circuit mode. 'Half Adder' adds 2 bits. 'Full Adder' adds 3 bits. 'Register' stores a bit using a circular particle trap.",
+        steps: [
+            "Select 'FULL ADDER'. Toggle Inputs A, B, and Carry. Verify the Sum and Carry outputs.",
+            "Select 'REGISTER (LATCH)'. This is a circular memory loop.",
+            "Click 'WRITE 1'. Watch particles spin indefinitely (stored energy).",
+            "Click 'CLEAR'. Watch the friction stop the particles (erasing memory)."
         ]
     }
 };
