@@ -419,6 +419,16 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         // Iterate Particles
         for (let i = 0; i < count; i++) {
             const rid = regionID[i];
+            
+            // Hide Region 1 (Input B) particles completely if in NOT mode
+            if (gateType === 'NOT' && rid === 1) {
+                 TEMP_OBJ.position.set(0, -1000, 0); 
+                 TEMP_OBJ.scale.set(0,0,0);
+                 TEMP_OBJ.updateMatrix();
+                 if(meshRef.current) meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
+                 continue; 
+            }
+
             const idx3 = i * 3;
             const px = x[idx3]; // Current X position
             
@@ -446,16 +456,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 if (B_Active) localAmp = getPulse(phaseB);
             } 
             else if (rid === 2) {
-                // Output Channel:
-                // If Intended Output is true, carry packets.
-                // If Destructive, turbulence handled below.
+                // Output Channel
                 
-                // Bias Logic for Inverted Gates (NAND, NOR, NOT)
-                // If Inputs are quiet but Output should be ON, simulate Bias Source
-                const isBiasDriven = intendedOutput && !A_Active && !B_Active;
+                // Constructive Interference Check (For AND/OR/XNOR 1,1)
+                const isConstructive = (A_Active && B_Active) && (gateType === 'AND' || gateType === 'OR' || gateType === 'XNOR');
 
                 if (intendedOutput) {
                      localAmp = getPulse(0);
+                     if (isConstructive) localAmp *= 1.4; // Boost amplitude for summation
                 }
             }
 
@@ -471,15 +479,13 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             // Apply Wave Forces
             if (rid === 2) {
-                 // Output Region: Strictly controlled by Intended Logic for Test Reliability
+                 // Output Region
                  const targetAct = intendedOutput ? 1.0 : 0.0;
                  activation[i] += (targetAct - activation[i]) * 0.1; // Smooth lerp
                  
                  if (intendedOutput) {
-                     // Packet Flow Visualization (Longitudinal + Transverse)
-                     // Push particles slightly forward with the pulse
+                     // Packet Flow Visualization
                      v[idx3] += localAmp * 0.2 * Math.cos(travel);
-                     // Vibrate outward
                      v[idx3+1] += localAmp * 0.1;
                  }
             } else {
@@ -494,7 +500,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             }
             
             // 3. XOR Destructive Interference Visuals (The "Collision")
-            // This happens ONLY near the junction (x approx 0)
             if (isDestructive && Math.abs(px) < 12.0) {
                  turbulence = 1.0;
                  
@@ -503,11 +508,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  const ripple = Math.sin(dist * 1.5 - timeNow * 20.0);
                  const damp = Math.max(0, 1.0 - dist / 12.0); // Decay at edge of zone
                  
-                 // Apply ripple perpendicular to wire (Y) and vibration (Z)
                  v[idx3+1] += ripple * damp * 0.8;
                  v[idx3+2] += Math.cos(timeNow * 30.0 + dist) * damp * 0.5; 
 
-                 // "Pressure" Jitter (Particles trying to escape the cancellation)
                  v[idx3] += (Math.random() - 0.5) * 1.5 * damp; 
                  v[idx3+1] += (Math.random() - 0.5) * 1.5 * damp;
             }
@@ -539,6 +542,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 else if (noise > 0.3) TEMP_COLOR.setHex(0xFF0000); // Pure Red
                 else TEMP_COLOR.setHex(0x220000); // Void Dark Red
             } else if (activation[i] > 0.1) {
+                // Bias Logic for inverted gates
+                const isBiasDriven = intendedOutput && !A_Active && !B_Active;
+                const isConstructive = (A_Active && B_Active) && (gateType === 'AND' || gateType === 'OR' || gateType === 'XNOR');
+
                 // Signal Flow - Bright Packets on Dim Wire
                 const brightness = activation[i];
                 // Pulse emphasis
@@ -547,7 +554,20 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 
                 if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
                 else if (rid === 1) TEMP_COLOR.setRGB(t, 0, t); // Magenta
-                else TEMP_COLOR.setRGB(0.1, t, 0.2); // Green Output
+                else if (rid === 2) {
+                    if (isBiasDriven) {
+                         // Bias Flow (Gold / VCC Power Rail Effect)
+                         TEMP_COLOR.setHex(0xFFD700); 
+                         TEMP_COLOR.lerp(WHITE, localAmp * 0.6);
+                    } else if (isConstructive) {
+                         // Constructive Summation (Super Bright Cyan/White)
+                         TEMP_COLOR.setRGB(0.5, 1.0, 1.0);
+                         TEMP_COLOR.lerp(WHITE, localAmp);
+                    } else {
+                         // Standard Output Green
+                         TEMP_COLOR.setRGB(0.1, t, 0.2); 
+                    }
+                }
                 
                 // Bloom White for Packet Peaks
                 if (pulseBoost > 0.6) TEMP_COLOR.lerp(WHITE, (pulseBoost - 0.6) * 2.0);
@@ -1152,6 +1172,7 @@ const UIOverlay: React.FC<{
                         {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHYSICS: DESTRUCTIVE INTERFERENCE" : ""}
                         {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "PHYSICS: CONSTRUCTIVE WAVE SUM" : ""}
                         {(params.gateType === 'NAND' || params.gateType === 'NOR') && !params.logicState[0] && !params.logicState[1] ? "PHYSICS: BIAS FLOW (UNOPPOSED)" : ""}
+                        {params.gateType === 'NOT' && !params.logicState[0] ? "PHYSICS: BIAS FLOW" : ""}
                     </div>
 
                      {/* Test Runner UI */}
