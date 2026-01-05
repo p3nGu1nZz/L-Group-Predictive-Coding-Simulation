@@ -78,5 +78,17 @@ export const EXPERIMENT_INFO: Record<string, InfoContent> = {
             "Click 'WRITE 1'. Watch particles spin indefinitely (stored energy).",
             "Click 'CLEAR'. Watch the friction stop the particles (erasing memory)."
         ]
+    },
+    prime: {
+        title: "Experiment F: Prime Search Program",
+        summary: "A complex integrated circuit that increments a counter and filters for prime numbers (2, 3, 5, 7, 11, 13).",
+        importance: "This combines all previous modules (Registers, Logic, Latch) into a functional program. It demonstrates how simple physical rules can be chained to perform algorithmic tasks.",
+        demonstration: "The system iterates from 0 to 15. The 'Logic Mesh' (Center) acts as a physical filter. If the number is Prime, the particles are guided to the 'Result Latch' (Right) via constructive interference.",
+        steps: [
+            "Click 'RUN PROGRAM' to start the search loop.",
+            "Observe the Counter (Left) incrementing.",
+            "Watch the central Mesh. When a Prime (e.g., 5) is found, a massive energy surge travels to the Output Latch.",
+            "The Output Latch turns GOLD for Prime, or dark RED for Composite."
+        ]
     }
 };

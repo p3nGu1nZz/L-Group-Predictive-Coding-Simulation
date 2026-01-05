@@ -226,9 +226,59 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         data.current.activation.fill(0);
         data.current.v.fill(0);
         
-        // --- EXPERIMENT E LAYOUTS ---
+        // --- EXPERIMENT E/F LAYOUTS ---
         if (params.gateType === 'HALF_ADDER') {
              
+             if (params.circuitMode === 'PRIME_CHECKER') {
+                 // COMPLEX CIRCUIT: PRIME CHECKER
+                 // Regions:
+                 // 0: Register Bank (Left)
+                 // 1: Logic Mesh (Center)
+                 // 2: Result Latch (Right)
+                 const regCount = Math.floor(count * 0.2);
+                 const logicCount = Math.floor(count * 0.5);
+                 
+                 for(let i=0; i<count; i++) {
+                     let group = 0;
+                     if (i < regCount) group = 0; // Register (Input)
+                     else if (i < regCount + logicCount) group = 1; // Logic (Process)
+                     else group = 2; // Latch (Output)
+                     
+                     data.current.regionID[i] = group;
+                     
+                     let cx=0, cy=0, cz=0;
+                     
+                     if (group === 0) {
+                         // 4 Register Bits vertically stacked
+                         const bitIdx = i % 4; 
+                         cx = -45;
+                         cy = 15 - (bitIdx * 10); // 15, 5, -5, -15
+                         // Small rings
+                         const theta = Math.random() * Math.PI * 2;
+                         const r = 3 + Math.random();
+                         cx += Math.cos(theta) * r;
+                         cy += Math.sin(theta) * r;
+                     } else if (group === 1) {
+                         // Central Processing Mesh
+                         // Chaotic but contained box
+                         cx = (Math.random() - 0.5) * 40;
+                         cy = (Math.random() - 0.5) * 30;
+                         cz = (Math.random() - 0.5) * 10;
+                     } else {
+                         // Output Latch (Right)
+                         const theta = Math.random() * Math.PI * 2;
+                         const r = 10 + Math.random() * 5;
+                         cx = 45 + Math.cos(theta) * r;
+                         cy = Math.sin(theta) * r;
+                         cz = (Math.random() - 0.5) * 2;
+                     }
+                     
+                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
+                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
+                 }
+                 return;
+             }
+
              if (params.circuitMode === 'REGISTER_BANK') {
                  // 4-BIT REGISTER LAYOUT
                  // Regions 0-3: The 4 storage rings.
@@ -260,10 +310,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
              if (params.circuitMode === 'RIPPLE_ADDER') {
                  // 4-BIT RIPPLE CARRY ADDER
-                 // Regions:
-                 // 0-3: Sum Bits 0-3
-                 // 4: Carry Out
-                 // Layout: Horizontal Chain of 4 Adders
                  const stageCount = 4;
                  const particlesPerStage = Math.floor(count / stageCount);
                  
@@ -479,6 +525,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  // Handled locally
              } else if (circuitMode === 'RIPPLE_ADDER') {
                  // Handled locally
+             } else if (circuitMode === 'PRIME_CHECKER') {
+                 // Handled locally
              } else if (circuitMode === 'FULL_ADDER') {
                  // Sum = A XOR B XOR Cin
                  const xorAB = A_Active !== B_Active;
@@ -538,7 +586,55 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             };
 
             // --- MODE SPECIFIC PHYSICS ---
-            if (circuitMode === 'REGISTER_BANK' && gateType === 'HALF_ADDER') {
+            if (circuitMode === 'PRIME_CHECKER' && gateType === 'HALF_ADDER') {
+                // PRIME CHECKER LOGIC
+                // Region 0: Register Bank (Bits 0-3)
+                // Region 1: Logic Mesh (Filter)
+                // Region 2: Output Latch
+                
+                if (rid === 0) {
+                    // Register activity
+                    // Map particle index to bit: i % 4
+                    const bitIdx = i % 4;
+                    const bitActive = (params.programCounter >> bitIdx) & 1;
+                    if (bitActive) localAmp = getPulse(0);
+                } 
+                else if (rid === 1) {
+                    // Logic Mesh - Processing visual
+                    if (params.programStep === 'COMPUTE') {
+                        localAmp = getPulse(0) * 0.8;
+                        // Flow towards center then right
+                        v[idx3] += (20 - x[idx3]) * 0.05; // Pull right
+                    }
+                } 
+                else if (rid === 2) {
+                    // Output Latch
+                    if (params.isPrime && params.programStep === 'LATCH') {
+                        // Trapped Gold Ring
+                        isGolden = true;
+                        localAmp = 1.0;
+                        
+                        const centerX = 45; const centerY = 0;
+                        const dx = x[idx3] - centerX;
+                        const dy = x[idx3+1] - centerY;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        const radius = 12;
+                        
+                        const spinSpeed = 0.7;
+                        v[idx3] += (-dy / (dist+0.1)) * spinSpeed;
+                        v[idx3+1] += (dx / (dist+0.1)) * spinSpeed;
+                        
+                        const pull = (radius - dist) * 0.15;
+                        v[idx3] += (dx / (dist+0.1)) * pull;
+                        v[idx3+1] += (dy / (dist+0.1)) * pull;
+                        v[idx3+2] -= x[idx3+2] * 0.2;
+                    } else if (!params.isPrime && params.programStep === 'LATCH') {
+                        // Rejection (Red Chaos)
+                        turbulence = 0.5;
+                    }
+                }
+            }
+            else if (circuitMode === 'REGISTER_BANK' && gateType === 'HALF_ADDER') {
                 // 4-BIT REGISTER
                 // Check if this bit is active
                 // rid = 0..3 corresponds to bits 0..3
@@ -570,10 +666,8 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                     v[idx3+2] -= x[idx3+2] * 0.15;
                 } else {
                     // Empty state - Scatter physics
-                    // Particles should drift aimlessly or jitter
                     turbulence = 0.2; // Mild turbulence
                     localAmp = 0;
-                    // Push away from center lightly to prevent clumping
                     const centerX = -30 + (rid * 20);
                     const dx = x[idx3] - centerX;
                     if (Math.abs(dx) < 2) v[idx3] += dx * 0.1;
@@ -582,7 +676,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             else if (circuitMode === 'RIPPLE_ADDER' && gateType === 'HALF_ADDER') {
                 // 4-BIT ADDER PHYSICS
                 // rid = 0..3 (Bit index)
-                // Determine logic state for this bit
                 const bit = rid;
                 const bitA = (params.inputA_4bit >> bit) & 1;
                 const bitB = (params.inputB_4bit >> bit) & 1;
@@ -601,26 +694,16 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 const bitCout = (bitA & bitB) | (bitCin & (bitA ^ bitB));
                 
                 // Visualization
-                // Input activity
                 if (bitA || bitB) localAmp += getPulse(0) * 0.5;
-                
-                // Sum activity
                 if (bitSum) {
                     localAmp = getPulse(0);
                     isGolden = false; // Greenish
                 }
-                
-                // Carry activity (visualized as turbulence or intense flow)
                 if (bitCout) {
                     isGolden = true; // Gold
                     localAmp = Math.max(localAmp, getPulse(0) * 1.2);
                 }
-                
-                // Destructive interference if inputs conflict but sum is 0
                 if ((bitA && bitB && !bitCin) || (bitA && bitCin && !bitB) || (bitB && bitCin && !bitA)) {
-                     // 2 inputs active, sum is 0, carry is 1. 
-                     // The sum region should show interference, but Carry region carries on.
-                     // Since we merge them, let's show a mix.
                      if (!bitSum) turbulence = 0.8;
                 }
             }
@@ -700,10 +783,12 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             let inputActive = false;
             let outputActive = false;
             
-            if (circuitMode === 'REGISTER_BANK') {
+            if (circuitMode === 'PRIME_CHECKER') {
+                // Determine flow based on stage
+                if (params.programStep !== 'INCREMENT') outputActive = true; 
+            } else if (circuitMode === 'REGISTER_BANK') {
                 if ((params.registerState & (1 << rid)) !== 0) outputActive = true;
             } else if (circuitMode === 'RIPPLE_ADDER') {
-                // Inputs are implicit in the stage logic above, visuals driven by localAmp
                 if (localAmp > 0.1) outputActive = true; 
             } else {
                 if (rid < (circuitMode === 'FULL_ADDER' ? 3 : 2)) inputActive = true;
@@ -711,14 +796,17 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             }
             
             if (inputActive) {
-                 // Simplify check for basic modes
                  const isActive = (rid===0 && A_Active) || (rid===1 && B_Active) || (rid===2 && circuitMode==='FULL_ADDER' && C_Active);
                  if (isActive) v[idx3+1] += localAmp * 0.15;
                  activation[i] += (isActive ? 1.0 : 0.0 - activation[i]) * 0.1;
             } else {
-                 // Output Regions Logic for Flow
                  let targetAct = 0.0;
-                 if (circuitMode === 'REGISTER_BANK') {
+                 if (circuitMode === 'PRIME_CHECKER') {
+                     // Pulse based on step
+                     if (rid === 0 && params.programStep === 'INCREMENT') targetAct = 1.0;
+                     if (rid === 1 && params.programStep === 'COMPUTE') targetAct = 1.0;
+                     if (rid === 2 && params.programStep === 'LATCH') targetAct = 1.0;
+                 } else if (circuitMode === 'REGISTER_BANK') {
                      targetAct = ((params.registerState & (1 << rid)) !== 0) ? 1.0 : 0.0;
                  } else if (circuitMode === 'RIPPLE_ADDER') {
                      targetAct = localAmp > 0.1 ? 1.0 : 0.0;
@@ -737,29 +825,30 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  activation[i] += (targetAct - activation[i]) * 0.1;
                  
                  // Flow visual
-                 if (activation[i] > 0.1 && circuitMode !== 'REGISTER_BANK') {
+                 if (activation[i] > 0.1 && circuitMode !== 'REGISTER_BANK' && !(circuitMode === 'PRIME_CHECKER' && rid===2)) {
                      // Flow direction: +X
                      v[idx3] += localAmp * 0.5; // Accelerate right
                      v[idx3+1] += localAmp * 0.1; // Bobble
                  }
             }
             
-            // 3. XOR Destructive Interference Visuals
+            // 3. Destructive Interference / Rejection
             if (turbulence > 0.5) {
                  const dist = Math.abs(px); 
                  const damp = Math.max(0, 1.0 - dist / 15.0);
                  
-                 // Violent localized vibration without flow
                  v[idx3+1] += Math.sin(timeNow * 50.0) * damp * 2.0;
                  v[idx3+2] += Math.cos(timeNow * 40.0) * damp * 2.0; 
                  v[idx3] += (Math.random() - 0.5) * 5.0 * damp; 
             }
 
-            // Damping (Special case for Memory Register: No Damping when active!)
+            // Damping
             let dampingFactor = 0.8;
             if (circuitMode === 'REGISTER_BANK') {
-                if ((params.registerState & (1 << rid)) !== 0) dampingFactor = 0.99; // Low friction for storage (Superconductor)
-                else dampingFactor = 0.5; // High friction for clear (Insulator)
+                if ((params.registerState & (1 << rid)) !== 0) dampingFactor = 0.99; 
+                else dampingFactor = 0.5; 
+            } else if (circuitMode === 'PRIME_CHECKER' && rid === 2 && params.isPrime && params.programStep === 'LATCH') {
+                dampingFactor = 0.99; // Trap prime result
             }
             
             v[idx3] *= dampingFactor;
@@ -781,12 +870,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // Coloring
             if (turbulence > 0.5) {
                 const noise = Math.random();
-                // Dark Matter Effect
                 if (noise > 0.95) TEMP_COLOR.setHex(0x000000); 
                 else if (noise > 0.8) TEMP_COLOR.setHex(0x330000); 
                 else TEMP_COLOR.setHex(0x111111);
-                
-                // Occasional sparks
                 if (Math.random() > 0.98) TEMP_COLOR.setHex(0xFF0000); 
 
             } else if (activation[i] > 0.1) {
@@ -794,10 +880,14 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 const pulseBoost = localAmp * 0.8; 
                 const t = Math.min(1.0, brightness + pulseBoost);
                 
-                if (circuitMode === 'REGISTER_BANK') {
-                     // Memory Plasma Color
+                if (circuitMode === 'REGISTER_BANK' || (circuitMode === 'PRIME_CHECKER' && rid === 0)) {
+                     // Registers are Amber/Gold
                      TEMP_COLOR.setHex(0xFFAA00);
                      TEMP_COLOR.lerp(WHITE, localAmp);
+                }
+                else if (circuitMode === 'PRIME_CHECKER' && rid === 1) {
+                    // Logic Mesh is Cyan/Matrix
+                    TEMP_COLOR.setRGB(0, t, t);
                 }
                 else if (rid < 2) {
                     if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
@@ -805,15 +895,13 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 }
                 else {
                     if (isGolden) {
-                         // Output Signal
+                         // Output Signal / Prime Found
                          TEMP_COLOR.setHex(0xFFD700); 
                          TEMP_COLOR.lerp(WHITE, localAmp * 0.6);
                     } else if (gateType === 'HALF_ADDER') {
-                         // Sum Output (Green)
                          TEMP_COLOR.setRGB(0.1, t, 0.2);
                          if (localAmp > 0.5) TEMP_COLOR.lerp(WHITE, localAmp * 0.4);
                     } else {
-                         // Generic Output
                          TEMP_COLOR.setRGB(0.1, t, 0.2); 
                          if (localAmp > 0.5) TEMP_COLOR.lerp(WHITE, localAmp * 0.5);
                     }
@@ -1151,6 +1239,40 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
      const shape = [];
      
      if (gateType === 'HALF_ADDER') {
+         if (circuitMode === 'PRIME_CHECKER') {
+             // 4-BIT REG (LEFT)
+             for(let i=0; i<4; i++) {
+                 const cy = 15 - (i * 10);
+                 const cx = -45;
+                 const circle = [];
+                 for(let j=0; j<=16; j++) {
+                     const theta = (j/16) * Math.PI * 2;
+                     circle.push(new THREE.Vector3(cx + Math.cos(theta)*3, cy + Math.sin(theta)*3, 0));
+                 }
+                 shape.push(circle);
+                 // Line to Mesh
+                 shape.push([new THREE.Vector3(cx+3, cy, 0), new THREE.Vector3(-20, 0, 0)]);
+             }
+             
+             // Logic Mesh Box
+             const box = [
+                 new THREE.Vector3(-20, 15, 0), new THREE.Vector3(20, 15, 0),
+                 new THREE.Vector3(20, -15, 0), new THREE.Vector3(-20, -15, 0),
+                 new THREE.Vector3(-20, 15, 0)
+             ];
+             shape.push(box);
+             
+             // Output Latch
+             shape.push([new THREE.Vector3(20, 0, 0), new THREE.Vector3(33, 0, 0)]);
+             const bigCircle = [];
+             for(let j=0; j<=32; j++) {
+                 const theta = (j/32) * Math.PI * 2;
+                 bigCircle.push(new THREE.Vector3(45 + Math.cos(theta)*12, Math.sin(theta)*12, 0));
+             }
+             shape.push(bigCircle);
+             return shape;
+         }
+
          if (circuitMode === 'REGISTER_BANK') {
              // 4 Rings visual
              for(let i=0; i<4; i++) {
@@ -1240,6 +1362,18 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
           {points.map((p, i) => (
               <Line key={i} points={p} color="cyan" opacity={0.2} transparent lineWidth={1} />
           ))}
+          {gateType === 'HALF_ADDER' && circuitMode === 'PRIME_CHECKER' && (
+              <>
+                 <Text position={[-45, 22, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">COUNTER</Text>
+                 <Text position={[0, 20, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">LOGIC MESH (FILTER)</Text>
+                 <Text position={[45, 18, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">RESULT LATCH</Text>
+                 
+                 <Text position={[-45, 15, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B0</Text>
+                 <Text position={[-45, 5, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B1</Text>
+                 <Text position={[-45, -5, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B2</Text>
+                 <Text position={[-45, -15, 0]} fontSize={1.5} color="#FFFFFF" anchorX="right" anchorY="middle">B3</Text>
+              </>
+          )}
           {gateType === 'HALF_ADDER' && circuitMode === 'REGISTER_BANK' && (
               <>
                  <Text position={[-30, 12, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">BIT 0</Text>
@@ -1298,6 +1432,23 @@ const TruthTable: React.FC<{ params: SimulationParams }> = ({ params }) => {
     const c = logicState[2];
 
     if (gateType === 'HALF_ADDER') {
+        if (circuitMode === 'PRIME_CHECKER') return (
+            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                <div className="text-[10px] text-gray-500 font-mono text-center">PROGRAM STATE</div>
+                <div className="text-2xl font-mono text-center text-white font-bold tracking-widest mt-1">
+                    {params.programCounter.toString(2).padStart(4, '0')} ({params.programCounter})
+                </div>
+                <div className="border-t border-gray-700 my-2"></div>
+                <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-400">CHECKING:</span>
+                    <span className={params.isPrime ? "text-amber-400 font-bold" : "text-red-500"}>
+                        {params.isPrime ? "PRIME FOUND" : "COMPOSITE"}
+                    </span>
+                </div>
+                <div className="text-[9px] text-gray-500 text-center mt-1">STEP: {params.programStep}</div>
+            </div>
+        );
+
         if (circuitMode === 'REGISTER_BANK') return (
             <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
                 <div className="text-[10px] text-gray-500 font-mono text-center">MEMORY BANK STATUS</div>
@@ -1444,7 +1595,7 @@ const UIOverlay: React.FC<{
                 </div>
             )
         }
-        if (mode === 'logic' || mode === 'adder') {
+        if (mode === 'logic' || mode === 'adder' || mode === 'prime') {
             return (
                 <div className="mt-4 space-y-2">
                     {mode === 'logic' && (
@@ -1487,9 +1638,31 @@ const UIOverlay: React.FC<{
                         </>
                     )}
 
-                    <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">CIRCUIT CONTROLS</div>
-                    
-                    {params.circuitMode === 'REGISTER_BANK' ? (
+                    {mode === 'prime' && (
+                        <div className="text-xs text-cyan-500 font-bold tracking-widest border-b border-cyan-900 pb-1">PROGRAM CONTROL</div>
+                    )}
+
+                    {params.circuitMode === 'PRIME_CHECKER' && mode === 'prime' ? (
+                        <div className="space-y-3 mt-2">
+                             <div className="p-3 bg-black/50 border border-gray-700 rounded text-center">
+                                 <div className="text-[10px] text-gray-400 mb-1">CURRENT INSTRUCTION</div>
+                                 <div className="text-lg font-mono text-cyan-300 font-bold">{params.programStep}</div>
+                             </div>
+                             
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive}))}
+                                className={`w-full py-3 text-xs font-bold border transition-all ${params.loopActive ? 'bg-cyan-900/40 border-cyan-500 text-cyan-200 animate-pulse' : 'bg-gray-900 border-gray-600 text-gray-400 hover:border-white'}`}
+                             >
+                                {params.loopActive ? "PAUSE PROGRAM" : "RUN SEARCH PROGRAM"}
+                             </button>
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, programCounter: 0, loopActive: false, isPrime: false}))}
+                                className="w-full py-2 bg-red-900/20 border border-red-500/50 text-red-300 text-xs font-bold hover:bg-red-900/40"
+                             >
+                                RESET COUNTER
+                             </button>
+                        </div>
+                    ) : params.circuitMode === 'REGISTER_BANK' ? (
                         <div className="space-y-2 mt-2">
                              <div className="grid grid-cols-4 gap-1">
                                 <button onClick={() => setParams((p: any) => ({...p, registerState: p.registerState ^ 1}))} className={`text-[10px] border ${params.registerState&1 ? 'bg-amber-500 text-black' : 'border-gray-700'}`}>B0</button>
@@ -1577,6 +1750,7 @@ const UIOverlay: React.FC<{
                         {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHYSICS: DESTRUCTIVE INTERFERENCE" : ""}
                         {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "PHYSICS: CONSTRUCTIVE WAVE SUM" : ""}
                         {params.circuitMode === 'REGISTER_BANK' && params.registerState > 0 ? "PHYSICS: UNDAMPED PLASMA TOROID (LATCH)" : ""}
+                        {params.circuitMode === 'PRIME_CHECKER' && params.isPrime ? "PHYSICS: RESONANT MODE (GOLD)" : ""}
                     </div>
                 </div>
             )
@@ -1630,7 +1804,7 @@ const UIOverlay: React.FC<{
                             value={params.inputText} 
                             onChange={(e) => setParams({...params, inputText: e.target.value.toUpperCase()})}
                             className="bg-black border border-gray-700 text-right text-xs text-white p-1 w-24 focus:border-cyan-500 outline-none"
-                            disabled={mode === 'temporal' || mode === 'logic' || mode === 'adder'}
+                            disabled={mode === 'temporal' || mode === 'logic' || mode === 'adder' || mode === 'prime'}
                         />
                      </div>
                      <div className="flex justify-between items-center">
@@ -1767,6 +1941,12 @@ const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart })
             <div className="text-2xl font-bold text-white group-hover:text-orange-400 mb-2">CPU CORE</div>
             <p className="text-xs text-gray-500 leading-relaxed">Complex circuits: Adders and Registers.</p>
           </button>
+
+          <button onClick={() => onStart('prime')} className="group relative p-6 border border-gray-800 hover:border-cyan-500 transition-all bg-gray-900/50 hover:bg-cyan-900/20 text-left col-span-1 md:col-span-3">
+            <div className="text-cyan-500 text-xs font-bold tracking-widest mb-2">MODULE 07</div>
+            <div className="text-2xl font-bold text-white group-hover:text-cyan-400 mb-2">PRIME SEARCH</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Functional program loop. Counter -> Prime Filter -> Latch.</p>
+          </button>
         </div>
       </div>
     </div>
@@ -1803,7 +1983,34 @@ const App: React.FC = () => {
         
         const loopFunction = () => {
             // Complex Circuit Automation
-            if (params.circuitMode === 'REGISTER_BANK') {
+            if (params.circuitMode === 'PRIME_CHECKER') {
+                // Program State Machine
+                setParams(current => {
+                    let nextStep = current.programStep;
+                    let nextCount = current.programCounter;
+                    let nextPrime = current.isPrime;
+                    
+                    if (current.programStep === 'INCREMENT') {
+                        nextStep = 'COMPUTE';
+                        // Logic runs here...
+                        const n = current.programCounter;
+                        const primes = [2, 3, 5, 7, 11, 13];
+                        nextPrime = primes.includes(n);
+                    } 
+                    else if (current.programStep === 'COMPUTE') {
+                        nextStep = 'LATCH';
+                    } 
+                    else if (current.programStep === 'LATCH') {
+                        nextStep = 'INCREMENT';
+                        nextCount = (current.programCounter + 1) % 16;
+                    }
+                    
+                    return { ...current, programCounter: nextCount, programStep: nextStep, isPrime: nextPrime };
+                });
+                // Speed up for prime check
+                intervalTime = 800; 
+            }
+            else if (params.circuitMode === 'REGISTER_BANK') {
                  // Counts up 0-15 and stores it
                  setParams(current => ({ ...current, registerState: (current.registerState + 1) % 16 }));
             }
@@ -1869,11 +2076,21 @@ const App: React.FC = () => {
             newParams.usePaperPhysics = true;
             newParams.gateType = 'HALF_ADDER';
             newParams.inputText = "ADDER";
-            newParams.particleCount = 600; // Increased for 4-bit complexity
+            newParams.particleCount = 600; 
             newParams.accumulator = 0;
             newParams.loopActive = false;
             newParams.circuitMode = 'HALF_ADDER';
             newParams.memoryBit = 0;
+        } else if (selectedMode === 'prime') {
+            newParams.logicMode = true;
+            newParams.usePaperPhysics = true;
+            newParams.gateType = 'HALF_ADDER';
+            newParams.inputText = "PRIME";
+            newParams.particleCount = 800; // High count for 3 regions
+            newParams.loopActive = false;
+            newParams.circuitMode = 'PRIME_CHECKER';
+            newParams.programCounter = 0;
+            newParams.programStep = 'INCREMENT';
         }
 
         setParams(newParams);

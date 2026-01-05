@@ -39,7 +39,7 @@ export interface SimulationParams {
   // Experiment E Loop & Modes
   loopActive: boolean;
   accumulator: number;
-  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'RIPPLE_ADDER' | 'REGISTER_BANK'; // Updated Modes
+  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'RIPPLE_ADDER' | 'REGISTER_BANK' | 'PRIME_CHECKER'; // Updated Modes
   
   // 4-Bit Inputs for Complex Circuits
   inputA_4bit: number; // 0-15
@@ -47,6 +47,11 @@ export interface SimulationParams {
   registerState: number; // 0-15 (Stored value)
   writeEnable: boolean; 
   memoryBit: number; // Legacy/Single Bit support
+  
+  // Experiment F: Program State
+  programCounter: number; // 0-15
+  programStep: 'INCREMENT' | 'COMPUTE' | 'LATCH';
+  isPrime: boolean;
 }
 
 export interface ParticleData {
@@ -152,5 +157,9 @@ export const DEFAULT_PARAMS: SimulationParams = {
   inputB_4bit: 0,
   registerState: 0,
   memoryBit: 0, 
-  writeEnable: false
+  writeEnable: false,
+  
+  programCounter: 0,
+  programStep: 'INCREMENT',
+  isPrime: false
 };
