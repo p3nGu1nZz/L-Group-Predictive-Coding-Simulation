@@ -53,5 +53,17 @@ export const EXPERIMENT_INFO: Record<string, InfoContent> = {
             "Adjust 'Phase Coupling' to control how much vibrational phase dictates connection strength.",
             "Toggle 'L-GROUP' input to see how the lattice self-organizes under these constraints."
         ]
+    },
+    logic: {
+        title: "Experiment D: Quantum Logic Gate",
+        summary: "Demonstrates non-linear computation (XOR Gate) using Hysteresis and Destructive Interference.",
+        importance: "Linear networks cannot solve XOR. By utilizing the wave nature of our particles, we achieve Destructive Interference (Phase Cancellation) to implement logic gates without silicon.",
+        demonstration: "Region A (Left) and Region B (Right) are inputs. Region Center is Output. \nLogic: (A=1, B=0) -> ON. (A=0, B=1) -> ON. (A=1, B=1) -> OFF (Cancellation).",
+        steps: [
+            "Toggle Input A (Left) ON. Observe the center region glow (Constructive).",
+            "Toggle Input B (Right) ON. Observe the center region glow.",
+            "Toggle BOTH ON. Observe the center region fade (Destructive Interference).",
+            "This proves the system functions as a morphological XOR gate."
+        ]
     }
 };

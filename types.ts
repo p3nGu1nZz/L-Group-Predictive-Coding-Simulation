@@ -30,6 +30,10 @@ export interface SimulationParams {
   usePaperPhysics: boolean;
   spinCouplingStrength: number; // Gamma in Eq 18
   phaseCouplingStrength: number; // Alpha in Eq 14
+  
+  // Logic Experiment
+  logicMode: boolean;
+  logicState: [boolean, boolean]; // [Input A, Input B]
 }
 
 export interface ParticleData {
@@ -68,6 +72,11 @@ export interface SystemStats {
   spinOrder: number;    // Magnetization (0-1): Net Spin Alignment
   entropy: number;      // Thermodynamic Entropy proxy
   patternMatch: number; // % Similarity to target state
+}
+
+export interface TelemetryFrame {
+  time: number;
+  stats: SystemStats;
 }
 
 export interface TestResult {
@@ -117,4 +126,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   usePaperPhysics: false,
   spinCouplingStrength: 0.5,
   phaseCouplingStrength: 1.0,
+  
+  logicMode: false,
+  logicState: [false, false]
 };
