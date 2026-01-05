@@ -997,8 +997,11 @@ const UIOverlay: React.FC<{
     setParams: any, 
     setFeedback: any, 
     onExit: () => void,
-    onShowInfo: () => void 
-}> = ({ mode, params, setParams, setFeedback, onExit, onShowInfo }) => {
+    onShowInfo: () => void,
+    testResults: TestResult[],
+    isTesting: boolean,
+    onRunTests: () => void
+}> = ({ mode, params, setParams, setFeedback, onExit, onShowInfo, testResults, isTesting, onRunTests }) => {
     
     // --- Mode Specific Controls ---
     const renderControls = () => {
@@ -1053,6 +1056,31 @@ const UIOverlay: React.FC<{
                                 ? "SIGNAL FLOW ACTIVE" 
                                 : "AWAITING SIGNAL"
                         }
+                    </div>
+
+                     {/* Test Runner UI */}
+                    <div className="border-t border-gray-800 pt-3 mt-3">
+                         <button 
+                            onClick={onRunTests}
+                            disabled={isTesting}
+                            className={`w-full py-2 text-xs font-bold border ${isTesting ? 'border-gray-600 text-gray-500 cursor-not-allowed' : 'border-cyan-500 text-cyan-400 hover:bg-cyan-900/40'}`}
+                         >
+                            {isTesting ? "RUNNING DIAGNOSTICS..." : "RUN AUTOMATED TEST SUITE"}
+                         </button>
+                         
+                         {testResults.length > 0 && (
+                             <div className="mt-2 space-y-1">
+                                 {testResults.map((res, i) => (
+                                     <div key={i} className="flex justify-between items-center text-[10px] font-mono bg-black/40 p-1 px-2 border-l-2 border-gray-700">
+                                         <span className="text-gray-400">{res.testName}</span>
+                                         <div className="flex items-center gap-2">
+                                             <span className="text-gray-500">{res.details}</span>
+                                             <span className={`font-bold ${res.status === 'PASS' ? 'text-green-400' : 'text-red-500'}`}>{res.status}</span>
+                                         </div>
+                                     </div>
+                                 ))}
+                             </div>
+                         )}
                     </div>
                 </div>
             )
@@ -1162,6 +1190,10 @@ const App: React.FC = () => {
     const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
     const [teacherFeedback, setTeacherFeedback] = useState(0);
     const [showInfo, setShowInfo] = useState(false);
+    
+    // Test State
+    const [testResults, setTestResults] = useState<TestResult[]>([]);
+    const [isTesting, setIsTesting] = useState(false);
   
     const dataRef = useRef<ParticleData>({
       x: new Float32Array(0), v: new Float32Array(0), phase: new Float32Array(0), spin: new Int8Array(0),
@@ -1203,6 +1235,62 @@ const App: React.FC = () => {
     const handleExit = () => {
         setMode(null);
         setParams(DEFAULT_PARAMS);
+    };
+
+    const runLogicTests = async () => {
+        if (isTesting) return;
+        setIsTesting(true);
+        setTestResults([]);
+    
+        // Capture count from current params to ensure consistency
+        const count = params.particleCount;
+        const channelSize = Math.floor(count / 3);
+        
+        const cases = [
+            { a: false, b: false, expected: 0.0, label: "INPUT: 00" },
+            { a: true, b: false, expected: 1.0, label: "INPUT: 10" },
+            { a: false, b: true, expected: 1.0, label: "INPUT: 01" },
+            { a: true, b: true, expected: 0.0, label: "INPUT: 11 (XOR)" }
+        ];
+    
+        const newResults: TestResult[] = [];
+    
+        for (const c of cases) {
+            // 1. Set Input
+            setParams(p => ({ ...p, logicState: [c.a, c.b] }));
+            
+            // 2. Wait for signal propagation (simulated)
+            await new Promise(resolve => setTimeout(resolve, 800));
+    
+            // 3. Measure Output Region (Region 2)
+            let totalAct = 0;
+            let pCount = 0;
+            // Region 2 starts at index 2 * channelSize
+            const startIdx = channelSize * 2;
+            
+            for (let i = startIdx; i < count; i++) {
+                 totalAct += dataRef.current.activation[i];
+                 pCount++;
+            }
+            
+            const avg = pCount > 0 ? totalAct / pCount : 0;
+            // Threshold for pass: Expected 1.0 (allow >0.8), Expected 0.0 (allow <0.2)
+            const passed = Math.abs(avg - c.expected) < 0.25;
+    
+            newResults.push({
+                testName: c.label,
+                score: avg,
+                maxScore: 1.0,
+                status: passed ? 'PASS' : 'FAIL',
+                details: `Activ: ${avg.toFixed(2)}`
+            });
+            
+            setTestResults([...newResults]);
+        }
+    
+        setIsTesting(false);
+        // Reset inputs
+        setParams(p => ({ ...p, logicState: [false, false] }));
     };
 
     return (
@@ -1252,6 +1340,9 @@ const App: React.FC = () => {
                 setFeedback={setTeacherFeedback} 
                 onExit={handleExit}
                 onShowInfo={() => setShowInfo(true)}
+                testResults={testResults} 
+                isTesting={isTesting}    
+                onRunTests={runLogicTests} 
             />
         )}
 
