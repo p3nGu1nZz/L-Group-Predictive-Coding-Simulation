@@ -52,6 +52,7 @@ export interface SimulationParams {
   programCounter: number; // 0-15
   programStep: 'INCREMENT' | 'COMPUTE' | 'LATCH';
   isPrime: boolean;
+  foundPrimes: number[]; // History of found primes
 }
 
 export interface ParticleData {
@@ -161,5 +162,6 @@ export const DEFAULT_PARAMS: SimulationParams = {
   
   programCounter: 0,
   programStep: 'INCREMENT',
-  isPrime: false
+  isPrime: false,
+  foundPrimes: []
 };

@@ -1656,11 +1656,19 @@ const UIOverlay: React.FC<{
                                 {params.loopActive ? "PAUSE PROGRAM" : "RUN SEARCH PROGRAM"}
                              </button>
                              <button 
-                                onClick={() => setParams((p: any) => ({...p, programCounter: 0, loopActive: false, isPrime: false}))}
+                                onClick={() => setParams((p: any) => ({...p, programCounter: 0, loopActive: false, isPrime: false, foundPrimes: []}))}
                                 className="w-full py-2 bg-red-900/20 border border-red-500/50 text-red-300 text-xs font-bold hover:bg-red-900/40"
                              >
                                 RESET COUNTER
                              </button>
+
+                             <div className="mt-4 p-2 bg-black/60 border border-cyan-900/50">
+                                <div className="text-[10px] text-cyan-500 font-mono mb-1">TERMINAL OUTPUT: PRIMES</div>
+                                <div className="font-mono text-xs text-green-400 h-16 overflow-y-auto break-words leading-relaxed">
+                                    {params.foundPrimes.length > 0 ? params.foundPrimes.join(', ') : "_"}
+                                    <span className="animate-pulse">_</span>
+                                </div>
+                             </div>
                         </div>
                     ) : params.circuitMode === 'REGISTER_BANK' ? (
                         <div className="space-y-2 mt-2">
@@ -1989,6 +1997,7 @@ const App: React.FC = () => {
                     let nextStep = current.programStep;
                     let nextCount = current.programCounter;
                     let nextPrime = current.isPrime;
+                    let newFoundPrimes = current.foundPrimes;
                     
                     if (current.programStep === 'INCREMENT') {
                         nextStep = 'COMPUTE';
@@ -1999,13 +2008,25 @@ const App: React.FC = () => {
                     } 
                     else if (current.programStep === 'COMPUTE') {
                         nextStep = 'LATCH';
+                        if (current.isPrime) {
+                            // Add to history if not present (unique list for 0-15 cycle)
+                            if (!newFoundPrimes.includes(current.programCounter)) {
+                                newFoundPrimes = [...newFoundPrimes, current.programCounter].sort((a,b)=>a-b);
+                            }
+                        }
                     } 
                     else if (current.programStep === 'LATCH') {
                         nextStep = 'INCREMENT';
                         nextCount = (current.programCounter + 1) % 16;
                     }
                     
-                    return { ...current, programCounter: nextCount, programStep: nextStep, isPrime: nextPrime };
+                    return { 
+                        ...current, 
+                        programCounter: nextCount, 
+                        programStep: nextStep, 
+                        isPrime: nextPrime,
+                        foundPrimes: newFoundPrimes
+                    };
                 });
                 // Speed up for prime check
                 intervalTime = 800; 
@@ -2091,6 +2112,7 @@ const App: React.FC = () => {
             newParams.circuitMode = 'PRIME_CHECKER';
             newParams.programCounter = 0;
             newParams.programStep = 'INCREMENT';
+            newParams.foundPrimes = [];
         }
 
         setParams(newParams);
