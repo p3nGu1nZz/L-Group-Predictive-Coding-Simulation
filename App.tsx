@@ -449,6 +449,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 // Output Channel:
                 // If Intended Output is true, carry packets.
                 // If Destructive, turbulence handled below.
+                
+                // Bias Logic for Inverted Gates (NAND, NOR, NOT)
+                // If Inputs are quiet but Output should be ON, simulate Bias Source
+                const isBiasDriven = intendedOutput && !A_Active && !B_Active;
+
                 if (intendedOutput) {
                      localAmp = getPulse(0);
                 }
