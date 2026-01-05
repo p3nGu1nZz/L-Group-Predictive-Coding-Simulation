@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Stars, Cylinder, Grid } from '@react-three/drei';
+import { OrbitControls, Stars, Cylinder, Grid, Line, Text } from '@react-three/drei';
 import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { SimulationParams, ParticleData, DEFAULT_PARAMS, MemoryAction, CONSTANTS, TestResult, SystemStats, MemorySnapshot, TelemetryFrame } from './types';
@@ -244,7 +244,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // Input B: Bottom Left (-35, -15) -> Center (-5, 0)
             // Output: Center (-5, 0) -> Right (35, 0)
 
-            const jitter = 1.5; // Tube thickness
+            const jitter = 1.0; // Reduced jitter for cleaner lines
 
             if (group === 0) {
                  // Path A
@@ -437,7 +437,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
     for (let i = 0; i < count; i++) {
       let fx = 0, fy = 0, fz = 0;
-      let phaseDelta = 0; // Accumulated phase change from neighbors
+      let phaseDelta = 0; 
       const idx3 = i * 3;
       const ix = x[idx3], iy = x[idx3 + 1], iz = x[idx3 + 2];
       const rid = regionID[i];
@@ -468,41 +468,57 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
               flowPhase = -1.0;
           } else if (rid === 2) { // Output
               isActive = outputActive;
-              // Pass the color of the winning input, or 0 if cancelled
               flowPhase = combined; 
           }
 
           if (isActive) {
               activation[i] = 1.0;
-              // Visual Flow Wave: sin(position + time)
-              const wave = Math.sin(t * 10.0 - timeNow * 8.0);
+              // Distinct "Pulse" Packet Visualization
+              // Create discrete packets moving along the wire
+              const pulseFreq = 3.0; // Frequency of packets
+              const pulseSpeed = 5.0; // Speed of packets
+              const phaseOffset = t * 20.0 - timeNow * pulseSpeed;
+              const pulse = Math.sin(phaseOffset);
               
+              // Sharpen the pulse to look like a digital signal
+              const sharpPulse = Math.pow((pulse + 1.0) * 0.5, 8.0); // High power makes peaks narrow
+
               // Apply Flow Color
               if (flowPhase > 0.5) TEMP_COLOR.copy(CYAN);
               else if (flowPhase < -0.5) TEMP_COLOR.copy(MAGENTA);
-              else TEMP_COLOR.copy(DARK); // Should happen if inactive
+              else TEMP_COLOR.copy(DARK); 
 
               // Add wave pulse to color
-              TEMP_COLOR.lerp(WHITE, Math.max(0, wave * 0.5));
+              TEMP_COLOR.lerp(WHITE, sharpPulse);
+              
+              // Force scale based on pulse
+              const scale = 0.2 + sharpPulse * 0.3;
+              TEMP_OBJ.scale.set(scale, scale, scale);
+
           } else {
               activation[i] *= 0.9; // Fast decay
               
-              // Visualization of Destructive Interference (Collision)
+              // Visualization of Destructive Interference (Collision) at the Gate Input
               if (rid === 2 && isInterference) {
                  TEMP_COLOR.copy(DARK); // Blocked
-                 // Small jitter for "clash"
-                 fx += (Math.random()-0.5) * 0.5; 
-                 fy += (Math.random()-0.5) * 0.5; 
+                 // High turbulence at the junction point (t near 0)
+                 if (t < 0.1) {
+                     const jitter = (Math.random()-0.5) * 0.5;
+                     fx += jitter; 
+                     fy += jitter; 
+                     TEMP_COLOR.setRGB(0.2, 0.2, 0.2); // Faint spark
+                     TEMP_OBJ.scale.set(0.15, 0.15, 0.15);
+                 } else {
+                     TEMP_OBJ.scale.set(0.1, 0.1, 0.1);
+                 }
               } else {
-                 TEMP_COLOR.setHex(0x222222); // Idle dim path
+                 TEMP_COLOR.setHex(0x111111); // Idle dim path
+                 TEMP_OBJ.scale.set(0.1, 0.1, 0.1);
               }
           }
           
           if(meshRef.current) meshRef.current.setColorAt(i, TEMP_COLOR);
           
-          // Force scale based on flow
-          const scale = isActive ? 0.3 + Math.sin(t * 15 - timeNow * 10)*0.1 : 0.15;
-          TEMP_OBJ.scale.set(scale, scale, scale);
       } 
       // --- STANDARD PHYSICS LOGIC ---
       else {
@@ -537,7 +553,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
           totalError += dist;
           
           // Logic Mode: Tighter spring to keep stream shape
-          const k = logicMode ? 0.8 : k_spring_base;
+          const k = logicMode ? 1.0 : k_spring_base;
           
           fx += dx * k;
           fy += dy * k;
@@ -546,8 +562,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
       if (!logicMode) {
           // ... (Standard interaction logic preserved for other modes) ...
-          // Note: Logic Mode uses simplified flow visualization logic above instead of N-body calculation
-          // to maintain frame rate and clean visual for the "Stream" effect.
           
           const baseInteractionStrength = hasTarget[i] ? 0.1 : 1.0;
           let predictionLock = 0.0;
@@ -646,7 +660,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
       } // End of non-logic physics
 
       let particleDamping = 0.85; 
-      if (logicMode) particleDamping = 0.7; // Heavy damping for controlled flow
+      if (logicMode) particleDamping = 0.6; // Heavier damping for steady flow
 
       if (usePaperPhysics && !logicMode) {
           particleDamping = 0.90; 
@@ -805,8 +819,71 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
   );
 };
 
+const LogicGateOverlay: React.FC = () => {
+  const points = useMemo(() => {
+     // XOR Gate Shape coordinates
+     // Center approx (-5, 0)
+     const shape = [];
+     
+     // Back Curve (concave)
+     const backCurve = new THREE.CatmullRomCurve3([
+         new THREE.Vector3(-10, 8, 0),
+         new THREE.Vector3(-7, 0, 0),
+         new THREE.Vector3(-10, -8, 0)
+     ]);
+     shape.push(backCurve.getPoints(20));
+
+     // Top Curve
+     const topCurve = new THREE.CatmullRomCurve3([
+         new THREE.Vector3(-10, 8, 0),
+         new THREE.Vector3(0, 8, 0), // Control
+         new THREE.Vector3(5, 0, 0)  // Tip
+     ]);
+     shape.push(topCurve.getPoints(20));
+
+      // Bottom Curve
+     const bottomCurve = new THREE.CatmullRomCurve3([
+         new THREE.Vector3(-10, -8, 0),
+         new THREE.Vector3(0, -8, 0), // Control
+         new THREE.Vector3(5, 0, 0)  // Tip
+     ]);
+     shape.push(bottomCurve.getPoints(20));
+     
+     // Input Lines Visualization (Thin guides)
+     shape.push([new THREE.Vector3(-35, 15, 0), new THREE.Vector3(-9, 4, 0)]);
+     shape.push([new THREE.Vector3(-35, -15, 0), new THREE.Vector3(-9, -4, 0)]);
+     
+     // Output Line Visualization
+     shape.push([new THREE.Vector3(5, 0, 0), new THREE.Vector3(35, 0, 0)]);
+
+     // Inner Back Curve (XOR specific second line)
+     const innerBack = new THREE.CatmullRomCurve3([
+         new THREE.Vector3(-12, 8, 0),
+         new THREE.Vector3(-9, 0, 0),
+         new THREE.Vector3(-12, -8, 0)
+     ]);
+     shape.push(innerBack.getPoints(20));
+
+     return shape;
+  }, []);
+
+  return (
+      <group position={[-5, 0, 0]}>
+          {points.map((p, i) => (
+              <Line key={i} points={p} color="cyan" opacity={0.2} transparent lineWidth={1} />
+          ))}
+          <Text position={[-30, 18, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">INPUT A</Text>
+          <Text position={[-30, -18, 0]} fontSize={2} color="#FF00FF" anchorX="center" anchorY="middle">INPUT B</Text>
+          <Text position={[40, 0, 0]} fontSize={2} color="white" anchorX="center" anchorY="middle">OUTPUT</Text>
+          <Text position={[-2, 12, 0]} fontSize={1.5} color="gray" anchorX="center" anchorY="middle">XOR GATE</Text>
+      </group>
+  )
+}
+
 const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
-    if (!params.showRegions) return null;
+    if (!params.showRegions && !params.logicMode) return null;
+    if (params.logicMode) return <LogicGateOverlay />;
+    
     return (
         <group>
             <Cylinder args={[0.5, 0.5, 40, 8]} position={[-35, 0, 0]} rotation={[0, 0, 0]}>

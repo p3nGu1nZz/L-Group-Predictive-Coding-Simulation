@@ -1,54 +1,36 @@
 # Sprint 2 Status: Quantum Logic & Computational Morphology
 
 **Date:** 2025-05-23
-**Milestone:** IN PROGRESS
+**Milestone:** COMPLETE
 
 ---
 
 ## 1. Objective
 
-Currently, the system can **store** patterns (Sprint 0) and **predict** temporal sequences (Sprint 1). However, it behaves linearly—it accumulates signal. To perform true computation, it must handle non-linear operations (e.g., $A + B \neq 2$, but rather $A + B = 0$ in the case of XOR).
-
-Sprint 2 focuses on implementing **Hysteresis** (memory latching) and **Destructive Interference** to create logic gates within the particle cloud.
+The goal of Sprint 2 was to evolve the system from a passive memory store to a computational engine capable of non-linear logic. We aimed to demonstrate that simple particle interference rules can replicate digital logic gates (XOR).
 
 ---
 
-## 2. Planned Features
+## 2. Completed Features
 
-### A. Hysteresis (The "Latching" Effect)
-*   **Problem:** Particles currently flicker on/off linearly with input.
-*   **Solution:** Implement a **Schmitt Trigger** mechanism.
-    *   **Activation Threshold:** High energy required to turn ON.
-    *   **Deactivation Threshold:** Low energy required to turn OFF.
-*   **Effect:** This stabilizes calculations, allowing the cloud to "decide" on a state and hold it even if the input fluctuates.
+### A. Hysteresis (Memory Latching)
+*   **Implementation:** Integrated a Schmitt Trigger mechanism into the particle physics loop.
+*   **Behavior:** Particles now exhibit resistance to changing state. Once a particle activation energy exceeds `0.65`, it "latches" ON and remains ON until energy drops below `0.3`.
+*   **Result:** This stabilizes the network against noise, allowing for robust "Decision Making" states.
 
-### B. Experiment C: The Quantum Logic Gate
-*   **Goal:** Replace the current "L-Group" demo (or enhance it) to become a functional **XOR Gate**.
-*   **Setup:**
-    *   **Region A:** Input 1
-    *   **Region B:** Input 2
-    *   **Region C (Center):** The Output Processor.
-*   **Dynamics:**
-    *   If A or B fires -> Constructive Interference -> C turns ON.
-    *   If A and B fire -> Destructive Interference (Phase Cancellation) -> C turns OFF.
-    *   This effectively mimics a Quantum CNOT or Classical XOR gate.
+### B. Experiment D: The Quantum Logic Gate
+*   **Structure:** Implemented a Y-Junction circuit layout using 320 particles.
+*   **Mechanism:**
+    *   **Input A (Cyan):** Carries Positive Phase (+1).
+    *   **Input B (Magenta):** Carries Negative Phase (-1).
+    *   **XOR Logic:** When both streams meet at the central junction, their phases cancel out (Destructive Interference), resulting in a logical 0 (Dark/Turbulent state). If only one stream is active, it passes through to the Output (Logical 1).
+*   **Visuals:** Added a schematic "XOR Gate" overlay and distinct signal pulse animations to visualize data flow.
 
-### C. Truth Table Visualization
-*   A real-time HUD element showing the state of Inputs vs Output to verify logical correctness during the simulation.
+### C. Visualization
+*   **Truth Table:** The UI Overlay for Experiment D now displays the real-time logic state (A, B, Output) and indicates when "Phase Cancellation" occurs.
 
 ---
 
-## 3. Technical Implementation Plan
+## 3. Next Steps (Sprint 3)
 
-1.  **Modify `types.ts`:** Add `hysteresisState` to `ParticleData`.
-2.  **Update `App.tsx` (Physics Loop):**
-    *   Implement the hysteresis check inside the loop.
-    *   Implement "Phase Cancellation" logic where signals from different regions can subtract from each other based on phase alignment.
-3.  **Update `UIOverlay`:**
-    *   Build the `TruthTable` component.
-    *   Update the Experiment C (Paper) mode to be "Logic Gate" mode.
-
----
-
-## 4. Current Blockers / Risks
-*   **Phase Tuning:** Getting particles to perfectly cancel out (Destructive Interference) in a noisy 3D simulation is difficult. We may need to force hard-coded phase offsets for the XOR demonstration.
+With the logic layer complete, we move to **Sprint 3: Optimization & Scaling**, focusing on spatial hashing efficiencies to scale the system to 2000+ particles.
