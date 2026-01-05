@@ -49,10 +49,14 @@ export interface SimulationParams {
   memoryBit: number; // Legacy/Single Bit support
   
   // Experiment F: Program State
-  programCounter: number; // 0-15
+  programCounter: number; // Supports > 9999
   programStep: 'INCREMENT' | 'COMPUTE' | 'LATCH';
   isPrime: boolean;
   foundPrimes: number[]; // History of found primes
+  
+  // Experiment F: Adaptive & Memory Map
+  computeEnergy: number; // Tracks system stability for adaptive timing
+  waveTable: { value: number; isPrime: boolean }[]; // History for Ulam Spiral
 }
 
 export interface ParticleData {
@@ -163,5 +167,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   programCounter: 0,
   programStep: 'INCREMENT',
   isPrime: false,
-  foundPrimes: []
+  foundPrimes: [],
+  computeEnergy: 0,
+  waveTable: []
 };
