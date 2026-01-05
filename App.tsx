@@ -627,9 +627,6 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                     // Register activity: Map particle index to 64 bits
                     // Because particles > 64, we map using modulo
                     const bitIdx = i % 64; 
-                    // Safe integer bit check for display
-                    // JS bitwise is 32-bit. For >32, we need division logic
-                    // This is purely visual mapping
                     const num = params.programCounter;
                     const divisor = Math.pow(2, bitIdx);
                     const bitActive = (Math.floor(num / divisor) % 2) === 1;
@@ -640,13 +637,32 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                     }
                 } 
                 else if (rid === 1) {
-                    // Logic Mesh - Processing visual
+                    // Logic Mesh - Processing visual with L-Group Alignment
                     if (params.programStep === 'COMPUTE') {
                         localAmp = getPulse(0) * 0.8;
-                        // Flow towards center
-                        v[idx3] += (20 - x[idx3]) * 0.05; 
-                        // Vertical oscillation proportional to check complexity
-                        v[idx3+1] += Math.sin(timeNow * 10 + x[idx3]) * 0.2;
+                        
+                        // L-GROUP PHYSICS IMPLEMENTATION: Eq 18 and Eq 14 alignment
+                        // We couple particle i with particle j = (i+1)%N for simplicity in loop
+                        // This avoids O(N^2) neighbor search while still demonstrating the math
+                        
+                        const j = (i + 1) % count; 
+                        
+                        // Spin Coupling Term: (1 + gamma * S_i * S_j)
+                        const s_i = spin[i];
+                        const s_j = spin[j];
+                        const coupling = 1.0 + params.spinCouplingStrength * s_i * s_j; 
+                        
+                        // Phase Force Term: Tanh(alpha * dPhi)
+                        const dPhi = phase[i] - phase[j];
+                        const f_phase = DyT(dPhi, 1.0, 2.0); 
+                        
+                        // Apply Forces
+                        // Force is modulated by spin coupling (ferromagnetic alignment preferred)
+                        const forceMag = coupling * f_phase;
+                        
+                        v[idx3] += (20 - x[idx3]) * 0.05 * coupling; // Flow to center
+                        v[idx3+1] += forceMag * 0.15; // Phase drives vertical oscillation
+                        v[idx3+2] += (Math.random()-0.5) * 0.5 * (1.0/coupling); // Misaligned spins cause turbulence
                     }
                 } 
                 else if (rid === 2) {
@@ -1190,99 +1206,137 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
 
 // --- UI Components ---
 
-const PrimeWaveMap: React.FC<{ waveTable: { value: number, isPrime: boolean }[] }> = ({ waveTable }) => {
+const QuantumStateMap: React.FC<{ dataRef: React.MutableRefObject<ParticleData>, particleCount: number }> = ({ dataRef, particleCount }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+        let animationFrameId: number;
 
-        const w = canvas.width;
-        const h = canvas.height;
-        const cx = w / 2;
-        const cy = h / 2;
+        const render = () => {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
 
-        ctx.fillStyle = '#050505';
-        ctx.fillRect(0, 0, w, h);
+            const w = canvas.width;
+            const h = canvas.height;
+            
+            ctx.fillStyle = 'rgba(5,5,5,0.2)'; // Fade effect
+            ctx.fillRect(0, 0, w, h);
 
-        // Draw Ulam Spiral
-        let x = 0, y = 0;
-        let dx = 0, dy = -1;
-        
-        // Start from 1, but visualize based on our table
-        // We will map waveTable values to spiral coordinates
-        // Since waveTable is history, we can reconstruct spiral positions
-        
-        const spacing = 4; // pixels between points
-        
-        // Helper to get Spiral coord for number N
-        const getSpiralCoord = (n: number) => {
-             // Basic Ulam Spiral math
-             const k = Math.ceil((Math.sqrt(n) - 1) / 2);
-             let t = 2 * k + 1;
-             let m = t * t;
-             t = t - 1;
-             
-             if (n >= m - t) return { x: k - (m - n), y: -k };
-             m = m - t;
-             if (n >= m - t) return { x: -k, y: -k + (m - n) };
-             m = m - t;
-             if (n >= m - t) return { x: -k + (m - n), y: k };
-             return { x: k, y: k - (m - n - t) };
+            if (dataRef.current.x.length < particleCount * 3) {
+                 animationFrameId = requestAnimationFrame(render);
+                 return;
+            }
+
+            const { x, v, spin, regionID } = dataRef.current;
+            
+            // Visualize Logic Mesh (Region 1) particles
+            // Project X, Y to canvas
+            const scale = 3.0; // Zoom factor
+            const cx = w / 2;
+            const cy = h / 2;
+
+            for(let i=0; i<particleCount; i++) {
+                if (regionID[i] === 1) { // Only Logic Mesh
+                    const px = cx + x[i*3] * scale;
+                    const py = cy - x[i*3+1] * scale;
+                    
+                    // Color by Spin
+                    if (spin[i] > 0) ctx.fillStyle = '#ff0055'; // Up
+                    else ctx.fillStyle = '#0055ff'; // Down
+                    
+                    // Opacity by Momentum (Energy)
+                    const speed = Math.sqrt(v[i*3]**2 + v[i*3+1]**2 + v[i*3+2]**2);
+                    ctx.globalAlpha = Math.min(1.0, speed * 2.0);
+                    
+                    ctx.fillRect(px, py, 2, 2);
+                }
+            }
+            ctx.globalAlpha = 1.0;
+            
+            // Draw Axis
+            ctx.strokeStyle = '#333';
+            ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,h); ctx.moveTo(0,cy); ctx.lineTo(w,cy); ctx.stroke();
+
+            animationFrameId = requestAnimationFrame(render);
         };
 
-        // Draw grid faint
-        ctx.strokeStyle = '#111';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for(let i=0; i<w; i+=20) { ctx.moveTo(i,0); ctx.lineTo(i,h); ctx.moveTo(0,i); ctx.lineTo(w,i); }
-        ctx.stroke();
+        render();
 
-        waveTable.forEach(entry => {
-            const pos = getSpiralCoord(entry.value);
-            const px = cx + pos.x * spacing;
-            const py = cy + pos.y * spacing;
-            
-            if (px < 0 || px > w || py < 0 || py > h) return;
-
-            if (entry.isPrime) {
-                ctx.fillStyle = '#00FFFF'; // Cyan for Prime
-                ctx.beginPath();
-                ctx.arc(px, py, 2, 0, Math.PI*2);
-                ctx.fill();
-                // Glow
-                ctx.fillStyle = 'rgba(0,255,255,0.3)';
-                ctx.beginPath();
-                ctx.arc(px, py, 4, 0, Math.PI*2);
-                ctx.fill();
-            } else {
-                ctx.fillStyle = '#330033'; // Dark Purple for Composite
-                ctx.fillRect(px-1, py-1, 2, 2);
-            }
-        });
-        
-        // Draw cursor for current head
-        if (waveTable.length > 0) {
-            const last = waveTable[waveTable.length-1];
-            const pos = getSpiralCoord(last.value);
-            const px = cx + pos.x * spacing;
-            const py = cy + pos.y * spacing;
-            
-            ctx.strokeStyle = '#FFFFFF';
-            ctx.strokeRect(px-3, py-3, 6, 6);
-        }
-
-    }, [waveTable]);
+        return () => {
+            cancelAnimationFrame(animationFrameId);
+        };
+    }, [particleCount]); 
 
     return (
         <div className="relative border border-cyan-900/50 bg-black shadow-lg w-full h-full">
-            <div className="absolute top-0 left-0 bg-black/80 text-[10px] text-cyan-500 px-1 font-mono border-b border-r border-cyan-900/30">ULAM MEMORY MAP</div>
+            <div className="absolute top-0 left-0 bg-black/80 text-[10px] text-cyan-500 px-1 font-mono border-b border-r border-cyan-900/30">QUANTUM STATE (SPIN/MOMENTUM)</div>
             <canvas ref={canvasRef} width={200} height={200} className="w-full h-full block" />
         </div>
     );
 };
+
+const SpectralHeatmap: React.FC<{ dataRef: React.MutableRefObject<ParticleData>, particleCount: number }> = ({ dataRef, particleCount }) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+
+    useEffect(() => {
+        let animationFrameId: number;
+        
+        const render = () => {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+    
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.clearRect(0,0,w,h);
+
+            if (dataRef.current.x.length < particleCount * 3) {
+                 animationFrameId = requestAnimationFrame(render);
+                 return;
+            }
+    
+            const { x, v, regionID } = dataRef.current;
+            
+            // Divide X axis into bins
+            const bins = new Float32Array(32);
+            
+            for(let i=0; i<particleCount; i++) {
+                if (regionID[i] === 1) {
+                    // Map x (-20 to 20) to bin 0-31
+                    const bx = Math.floor(((x[i*3] + 20) / 40) * 32);
+                    if (bx >= 0 && bx < 32) {
+                        const speed = Math.sqrt(v[i*3]**2 + v[i*3+1]**2); // energy
+                        bins[bx] += speed;
+                    }
+                }
+            }
+            
+            // Draw bars
+            const barW = w / 32;
+            for(let i=0; i<32; i++) {
+                const hBar = Math.min(h, bins[i] * 5.0);
+                const intensity = Math.min(1.0, bins[i] * 0.2);
+                ctx.fillStyle = `rgb(0, ${Math.floor(intensity*255)}, ${Math.floor(intensity*255)})`;
+                ctx.fillRect(i * barW, h - hBar, barW - 1, hBar);
+            }
+
+            animationFrameId = requestAnimationFrame(render);
+        };
+        
+        render();
+        return () => cancelAnimationFrame(animationFrameId);
+    }, [particleCount]);
+
+    return (
+        <div className="relative border border-cyan-900/50 bg-black/50 shadow-lg w-full h-16 mt-2">
+            <div className="absolute top-0 left-0 text-[8px] text-cyan-500 px-1 font-mono">SPECTRAL DENSITY</div>
+            <canvas ref={canvasRef} width={250} height={60} className="w-full h-full block" />
+        </div>
+    );
+}
 
 const TruthTable: React.FC<{ params: SimulationParams }> = ({ params }) => {
     const rowClass = (active: boolean) => active ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
@@ -1429,11 +1483,30 @@ const UIOverlay: React.FC<{
     onShowInfo: () => void,
     testResults: TestResult[],
     isTesting: boolean,
-    onRunTests: () => void
-}> = ({ mode, params, setParams, setFeedback, onExit, onShowInfo, testResults, isTesting, onRunTests }) => {
+    onRunTests: () => void,
+    dataRef: React.MutableRefObject<ParticleData> // Passed for Visualizers
+}> = ({ mode, params, setParams, setFeedback, onExit, onShowInfo, testResults, isTesting, onRunTests, dataRef }) => {
     
-    // Auto-scroll logic removed to keep Ulam spiral static and visible
-    
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    // Auto-scroll terminal
+    useEffect(() => {
+        if (outputRef.current) {
+            outputRef.current.scrollTop = outputRef.current.scrollHeight;
+        }
+    }, [params.foundPrimes]);
+
+    const downloadPrimes = () => {
+        const csvContent = "data:text/csv;charset=utf-8," + "Prime Number\n" + params.foundPrimes.join("\n");
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "quantum_found_primes.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     // --- Mode Specific Controls ---
     const renderControls = () => {
         if (mode === 'inference') {
@@ -1527,6 +1600,28 @@ const UIOverlay: React.FC<{
                                     RESET
                                  </button>
                              </div>
+
+                             <div className="mt-4 bg-black/80 border border-cyan-900/50 shadow-inner">
+                                <div className="flex justify-between items-center px-2 py-1 bg-cyan-900/20 border-b border-cyan-900/30">
+                                    <div className="text-[10px] text-cyan-500 font-mono tracking-widest">TERMINAL OUTPUT</div>
+                                    <button onClick={downloadPrimes} className="text-[9px] text-green-400 hover:text-white border border-green-700 px-2 bg-green-900/20">EXPORT CSV</button>
+                                </div>
+                                <div 
+                                    ref={outputRef}
+                                    className="p-2 font-mono text-xs text-green-400 h-32 overflow-y-auto break-words leading-relaxed scrollbar-thin scrollbar-thumb-cyan-900 scrollbar-track-black"
+                                >
+                                    {params.foundPrimes.length > 0 ? (
+                                        params.foundPrimes.map((p, i) => (
+                                            <span key={i}>{p}{i < params.foundPrimes.length - 1 ? ', ' : ''}</span>
+                                        ))
+                                    ) : (
+                                        <span className="text-gray-600 italic">Waiting for results...</span>
+                                    )}
+                                    <span className="animate-pulse ml-1">_</span>
+                                </div>
+                             </div>
+                             
+                             <SpectralHeatmap dataRef={dataRef} particleCount={params.particleCount} />
                         </div>
                     ) : params.circuitMode === 'REGISTER_BANK' ? (
                         <div className="space-y-2 mt-2">
@@ -1693,10 +1788,10 @@ const UIOverlay: React.FC<{
                 PHYSICS: <span className={params.usePaperPhysics ? "text-purple-400" : "text-white"}>{params.usePaperPhysics ? "L-GROUP (SPIN)" : "STANDARD (NEWTON)"}</span>
             </div>
 
-            {/* Bottom Left Panel for Prime Wave Map */}
+            {/* Bottom Left Panel for Quantum State Map (Replaces PrimeWaveMap) */}
             {mode === 'prime' && (
                 <div className="fixed bottom-4 left-4 w-64 h-64 pointer-events-none">
-                    <PrimeWaveMap waveTable={params.waveTable} />
+                    <QuantumStateMap dataRef={dataRef} particleCount={params.particleCount} />
                 </div>
             )}
         </div>
@@ -1855,7 +1950,10 @@ const App: React.FC = () => {
 
         let lastTime = 0;
         let accumulator = 0;
-        const targetDelay = 50; // Check every 50ms
+        // SLOW DOWN: Increased targetDelay to 200ms
+        const targetDelay = 200; 
+        // WAIT STATE Logic
+        let waitCycles = 0;
 
         const checkLoop = (time: number) => {
             if (!params.loopActive) return;
@@ -1867,40 +1965,44 @@ const App: React.FC = () => {
                 // --- EXPERIMENT LOGIC ---
                 if (params.circuitMode === 'PRIME_CHECKER') {
                     // ADAPTIVE TIMING LOGIC
-                    // We only advance if the system energy has settled (Simulating calculation complete)
                     const energy = statsRef.current.meanSpeed;
                     
                     setParams(current => {
                         let nextStep = current.programStep;
-                        let nextCount = current.programCounter;
-                        let nextPrime = current.isPrime;
-                        let newFoundPrimes = current.foundPrimes;
-                        let nextWaveTable = current.waveTable;
                         
                         // State Machine
                         if (current.programStep === 'INCREMENT') {
-                            // Instant transition to Compute
                             return { ...current, programStep: 'COMPUTE', computeEnergy: 1.0 }; 
                         } 
                         else if (current.programStep === 'COMPUTE') {
-                            // Wait for physics to settle (energy < 0.3) OR max timeout
+                            // Wait for physics to settle (energy < 0.4) AND minimum cycles
                             if (energy < 0.4) {
+                                if (waitCycles < 3) { // Ensure at least 3 checks (600ms) pass
+                                     waitCycles++;
+                                     return current;
+                                }
                                 // Calculation Done
+                                waitCycles = 0;
                                 const n = current.programCounter;
                                 const isP = isPrimeNumber(n);
                                 return { 
                                     ...current, 
                                     programStep: 'LATCH', 
                                     isPrime: isP,
-                                    // Update Memory Map
-                                    waveTable: [...current.waveTable, { value: n, isPrime: isP }].slice(-500) // Keep last 500 for perf
+                                    waveTable: [...current.waveTable, { value: n, isPrime: isP }].slice(-500)
                                 };
                             }
                             return current; // Keep waiting/computing
                         } 
                         else if (current.programStep === 'LATCH') {
                             // Quick latch visualization then next
-                            if (energy < 0.5) { // Wait for latch animation to settle slightly
+                            if (energy < 0.5) { 
+                                if (waitCycles < 4) { // Latch needs to be visible longer (800ms)
+                                     waitCycles++;
+                                     return current;
+                                }
+                                waitCycles = 0;
+                                let newFoundPrimes = current.foundPrimes;
                                 if (current.isPrime && !newFoundPrimes.includes(current.programCounter)) {
                                     newFoundPrimes = [...newFoundPrimes, current.programCounter].sort((a,b)=>a-b);
                                 }
@@ -1913,15 +2015,11 @@ const App: React.FC = () => {
                             }
                             return current;
                         }
-                        
                         return current;
                     });
                 }
                 // --- LEGACY CIRCUITS (Fixed Timing) ---
                 else {
-                    // (Code for other modes logic remains but runs slower here? 
-                    // actually we should probably separate this logic or just increment accumulators)
-                    // For simplicity, we just trigger the random updates for other modes periodically
                     accumulator += delta;
                     if (accumulator > 1000) {
                         accumulator = 0;
@@ -2150,6 +2248,7 @@ const App: React.FC = () => {
                 testResults={testResults} 
                 isTesting={isTesting}    
                 onRunTests={runLogicTests} 
+                dataRef={dataRef}
             />
         )}
 
