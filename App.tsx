@@ -422,43 +422,36 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             const idx3 = i * 3;
             const px = x[idx3]; // Current X position
             
-            // 1. Calculate Local Wave Amplitude
-            // Signal travels left to right. Wave = sin(kx - wt)
-            const k = 0.2; // Wave number
-            const w = 8.0; // Angular frequency
+            // 1. Calculate Local Wave Amplitude (DATA PACKETS)
+            // Signal travels left to right.
+            const k = 0.3; // Spatial frequency (packets per unit length)
+            const w = 12.0; // Temporal frequency (speed)
             const travel = k * px - w * timeNow;
             
             let localAmp = 0;
             let turbulence = 0;
 
+            // Pulse Generator: Sharp pulses (Power Sine)
+            const getPulse = (phaseOffset: number) => {
+                 const s = Math.sin(travel + phaseOffset);
+                 return Math.pow((s + 1.0) / 2.0, 8.0); // Sharpen into discrete packets
+            };
+
             if (rid === 0) {
                 // Input A Channel
-                if (A_Active) localAmp = Math.sin(travel + phaseA);
+                if (A_Active) localAmp = getPulse(phaseA);
             } 
             else if (rid === 1) {
                 // Input B Channel
-                if (B_Active) localAmp = Math.sin(travel + phaseB);
+                if (B_Active) localAmp = getPulse(phaseB);
             } 
             else if (rid === 2) {
-                // Output Channel: Superposition Principle
-                // We physically sum the contributions from A and B that would reach this point
-                let sum = 0;
-                
-                // Bias term for inverted gates (NAND, NOR) acts as a constant "1" source
-                if (['NAND', 'NOR', 'NOT', 'XNOR'].includes(gateType)) sum += 1.0; 
-
-                // Add Input A contribution
-                if (A_Active) sum += (gateType === 'NOT' ? -1.0 : 1.0); // NOT gate subtracts A from Bias
-
-                // Add Input B contribution
-                if (B_Active) {
-                     if (gateType === 'XOR' || gateType === 'XNOR') sum -= 1.0; // Phase cancelled
-                     else sum += 1.0;
+                // Output Channel:
+                // If Intended Output is true, carry packets.
+                // If Destructive, turbulence handled below.
+                if (intendedOutput) {
+                     localAmp = getPulse(0);
                 }
-                
-                // Normalize sum to roughly 0 or 1 range for activation physics
-                // The intendedOutput variable guides the 'target' state, but we animate based on sum
-                if (sum > 0.5) localAmp = Math.sin(travel); // Propagate wave
             }
 
             // 2. State & Activation Updates
@@ -474,13 +467,15 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             // Apply Wave Forces
             if (rid === 2) {
                  // Output Region: Strictly controlled by Intended Logic for Test Reliability
-                 // The visual wave is decorative, the 'activation' value is crucial for tests
                  const targetAct = intendedOutput ? 1.0 : 0.0;
                  activation[i] += (targetAct - activation[i]) * 0.1; // Smooth lerp
                  
                  if (intendedOutput) {
-                     // Physical wave vibration
-                     v[idx3+1] += Math.cos(timeNow * 10 + px * 0.5) * 0.1;
+                     // Packet Flow Visualization (Longitudinal + Transverse)
+                     // Push particles slightly forward with the pulse
+                     v[idx3] += localAmp * 0.2 * Math.cos(travel);
+                     // Vibrate outward
+                     v[idx3+1] += localAmp * 0.1;
                  }
             } else {
                  // Input Regions
@@ -489,18 +484,27 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  activation[i] += (targetAct - activation[i]) * 0.1;
                  
                  if (inputActive) {
-                      v[idx3+1] += localAmp * 0.1;
+                      v[idx3+1] += localAmp * 0.15;
                  }
             }
             
-            // 3. XOR Destructive Interference Visuals (The "Sparks")
+            // 3. XOR Destructive Interference Visuals (The "Collision")
             // This happens ONLY near the junction (x approx 0)
-            // Crucial: This must NOT affect Region 2 activation values significantly
-            if (isDestructive && Math.abs(px) < 5.0) {
+            if (isDestructive && Math.abs(px) < 12.0) {
                  turbulence = 1.0;
-                 v[idx3] += (Math.random() - 0.5) * 0.5;
-                 v[idx3+1] += (Math.random() - 0.5) * 0.5;
-                 v[idx3+2] += (Math.random() - 0.5) * 0.5;
+                 
+                 // Radial Ripple Logic
+                 const dist = Math.sqrt(px*px + x[idx3+1]*x[idx3+1]); // Distance from center
+                 const ripple = Math.sin(dist * 1.5 - timeNow * 20.0);
+                 const damp = Math.max(0, 1.0 - dist / 12.0); // Decay at edge of zone
+                 
+                 // Apply ripple perpendicular to wire (Y) and vibration (Z)
+                 v[idx3+1] += ripple * damp * 0.8;
+                 v[idx3+2] += Math.cos(timeNow * 30.0 + dist) * damp * 0.5; 
+
+                 // "Pressure" Jitter (Particles trying to escape the cancellation)
+                 v[idx3] += (Math.random() - 0.5) * 1.5 * damp; 
+                 v[idx3+1] += (Math.random() - 0.5) * 1.5 * damp;
             }
 
             // Damping
@@ -514,22 +518,35 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             // 4. Render Updates
             TEMP_OBJ.position.set(x[idx3], x[idx3+1], x[idx3+2]);
-            const s = 0.2 + activation[i] * 0.2;
+            // Scale increases with pulse intensity
+            const pulseScale = activation[i] > 0.5 ? localAmp * 0.3 : 0;
+            const s = 0.2 + pulseScale + activation[i] * 0.1;
             TEMP_OBJ.scale.set(s, s, s);
             TEMP_OBJ.updateMatrix();
             if(meshRef.current) meshRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
 
             // Coloring
             if (turbulence > 0.5) {
-                // Interference Sparks (Orange/Red)
-                if (Math.random() > 0.5) TEMP_COLOR.setHex(0xFF4500);
-                else TEMP_COLOR.setHex(0xFFFFFF);
+                // Interference Turbulence Pattern (Glitch / Collision)
+                const noise = Math.random();
+                if (noise > 0.92) TEMP_COLOR.setHex(0xFFFFFF); // White Spark
+                else if (noise > 0.6) TEMP_COLOR.setHex(0xFF3300); // Neon Orange
+                else if (noise > 0.3) TEMP_COLOR.setHex(0xFF0000); // Pure Red
+                else TEMP_COLOR.setHex(0x220000); // Void Dark Red
             } else if (activation[i] > 0.1) {
-                // Signal Flow
+                // Signal Flow - Bright Packets on Dim Wire
                 const brightness = activation[i];
-                if (rid === 0) TEMP_COLOR.setRGB(0, brightness, brightness); // Cyan
-                else if (rid === 1) TEMP_COLOR.setRGB(brightness, 0, brightness); // Magenta
-                else TEMP_COLOR.setRGB(0.1, brightness, 0.2); // Green Output
+                // Pulse emphasis
+                const pulseBoost = localAmp * 0.8; 
+                const t = Math.min(1.0, brightness + pulseBoost);
+                
+                if (rid === 0) TEMP_COLOR.setRGB(0, t, t); // Cyan
+                else if (rid === 1) TEMP_COLOR.setRGB(t, 0, t); // Magenta
+                else TEMP_COLOR.setRGB(0.1, t, 0.2); // Green Output
+                
+                // Bloom White for Packet Peaks
+                if (pulseBoost > 0.6) TEMP_COLOR.lerp(WHITE, (pulseBoost - 0.6) * 2.0);
+
             } else {
                 TEMP_COLOR.setHex(0x111111);
             }
@@ -539,7 +556,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 outlineRef.current.setMatrixAt(i, TEMP_OBJ.matrix);
                 // Bloom intensity
                 if (turbulence > 0.5) TEMP_EMISSIVE.setRGB(2, 0.5, 0);
-                else TEMP_EMISSIVE.copy(TEMP_COLOR).multiplyScalar(2.0);
+                else TEMP_EMISSIVE.copy(TEMP_COLOR).multiplyScalar(1.5 + localAmp * 2.0);
                 outlineRef.current.setColorAt(i, TEMP_EMISSIVE);
             }
         }
