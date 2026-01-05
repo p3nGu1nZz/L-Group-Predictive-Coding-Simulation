@@ -39,8 +39,14 @@ export interface SimulationParams {
   // Experiment E Loop & Modes
   loopActive: boolean;
   accumulator: number;
-  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'MEMORY_CELL' | 'DECODER_2_4'; // Added Decoder
-  memoryBit: number; // 0 or 1 for the Register
+  circuitMode: 'HALF_ADDER' | 'FULL_ADDER' | 'RIPPLE_ADDER' | 'REGISTER_BANK'; // Updated Modes
+  
+  // 4-Bit Inputs for Complex Circuits
+  inputA_4bit: number; // 0-15
+  inputB_4bit: number; // 0-15
+  registerState: number; // 0-15 (Stored value)
+  writeEnable: boolean; 
+  memoryBit: number; // Legacy/Single Bit support
 }
 
 export interface ParticleData {
@@ -141,5 +147,10 @@ export const DEFAULT_PARAMS: SimulationParams = {
   loopActive: false,
   accumulator: 0,
   circuitMode: 'HALF_ADDER',
-  memoryBit: 0
+  
+  inputA_4bit: 0,
+  inputB_4bit: 0,
+  registerState: 0,
+  memoryBit: 0, 
+  writeEnable: false
 };

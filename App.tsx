@@ -229,71 +229,63 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
         // --- EXPERIMENT E LAYOUTS ---
         if (params.gateType === 'HALF_ADDER') {
              
-             if (params.circuitMode === 'MEMORY_CELL') {
-                 // MEMORY REGISTER LAYOUT (Bit Loop)
-                 // Region 0: Data Bus (Linear)
-                 // Region 1: Storage Toroid (Circular)
-                 const busSize = Math.floor(count * 0.3);
-                 for (let i = 0; i < count; i++) {
-                     let group = i < busSize ? 0 : 1;
-                     data.current.regionID[i] = group;
-                     const t = i / count;
+             if (params.circuitMode === 'REGISTER_BANK') {
+                 // 4-BIT REGISTER LAYOUT
+                 // Regions 0-3: The 4 storage rings.
+                 const ringSize = Math.floor(count / 4);
+                 for(let i=0; i<count; i++) {
+                     const bitIdx = Math.floor(i / ringSize);
+                     data.current.regionID[i] = bitIdx; // 0, 1, 2, 3
                      
-                     let cx=0, cy=0, cz=0;
-                     if (group === 0) {
-                         // Data Bus
-                         cx = -40 + (i / busSize) * 30;
-                         cy = 5; 
-                         cz = (Math.random()-0.5) * 2;
-                     } else {
-                         // Toroid Trap
-                         // Make it a thick ring
-                         const ringIdx = i - busSize;
-                         const ringTotal = count - busSize;
-                         const theta = (ringIdx / ringTotal) * Math.PI * 10; // Multiple windings
-                         const r = 12 + (Math.random() * 4);
-                         cx = 25 + Math.cos(theta) * r;
-                         cy = Math.sin(theta) * r;
-                         cz = (Math.random() - 0.5) * 5;
-                     }
-                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = cz;
-                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = cz;
+                     // Layout: 4 Rings in a line
+                     const cx = -30 + (bitIdx * 20);
+                     const cy = 0;
+                     
+                     // Distribute in a thick torus
+                     const t = (i % ringSize) / ringSize;
+                     const theta = t * Math.PI * 2 * 3; // 3 windings
+                     const rBase = 8;
+                     const r = rBase + (Math.random()-0.5)*3;
+                     
+                     data.current.target[i*3] = cx + Math.cos(theta)*r;
+                     data.current.target[i*3+1] = cy + Math.sin(theta)*r;
+                     data.current.target[i*3+2] = (Math.random()-0.5)*4;
+                     
+                     data.current.x[i*3] = data.current.target[i*3];
+                     data.current.x[i*3+1] = data.current.target[i*3+1];
+                     data.current.x[i*3+2] = data.current.target[i*3+2];
                  }
                  return;
              }
 
-             if (params.circuitMode === 'DECODER_2_4') {
-                 // 2-to-4 DECODER LAYOUT
-                 // Region 0: Input A
-                 // Region 1: Input B
-                 // Region 2,3,4,5: Outputs D0, D1, D2, D3
-                 const inputSize = Math.floor(count * 0.3);
-                 const outputSize = count - inputSize;
+             if (params.circuitMode === 'RIPPLE_ADDER') {
+                 // 4-BIT RIPPLE CARRY ADDER
+                 // Regions:
+                 // 0-3: Sum Bits 0-3
+                 // 4: Carry Out
+                 // Layout: Horizontal Chain of 4 Adders
+                 const stageCount = 4;
+                 const particlesPerStage = Math.floor(count / stageCount);
                  
-                 for (let i=0; i<count; i++) {
-                     let group = 0;
-                     if (i < inputSize / 2) group = 0; // A
-                     else if (i < inputSize) group = 1; // B
-                     else {
-                         const outIdx = i - inputSize;
-                         const quadrant = Math.floor(outIdx / (outputSize/4));
-                         group = 2 + quadrant; // 2, 3, 4, 5
-                     }
-                     data.current.regionID[i] = group;
+                 for(let i=0; i<count; i++) {
+                     const stage = Math.min(stageCount-1, Math.floor(i / particlesPerStage));
+                     data.current.regionID[i] = stage; // 0..3 representing Bit 0..3
                      
-                     let cx=0, cy=0;
-                     if (group === 0) { cx = -40; cy = 15 + (Math.random()-0.5)*10; }
-                     else if (group === 1) { cx = -40; cy = -15 + (Math.random()-0.5)*10; }
-                     else {
-                         // Outputs fan out
-                         const q = group - 2; // 0..3
-                         cx = 30;
-                         cy = 30 - (q * 20); // 30, 10, -10, -30
-                         cx += (Math.random()-0.5)*5;
-                         cy += (Math.random()-0.5)*5;
-                     }
-                     data.current.target[i*3] = cx; data.current.target[i*3+1] = cy; data.current.target[i*3+2] = 0;
-                     data.current.x[i*3] = cx; data.current.x[i*3+1] = cy; data.current.x[i*3+2] = 0;
+                     // Each stage has inputs (A,B) and output (Sum) visuals merged
+                     const bx = -45 + (stage * 30);
+                     const by = 0;
+                     
+                     // Random cloud within the block
+                     const rx = (Math.random() - 0.5) * 15;
+                     const ry = (Math.random() - 0.5) * 20;
+                     
+                     data.current.target[i*3] = bx + rx;
+                     data.current.target[i*3+1] = by + ry;
+                     data.current.target[i*3+2] = (Math.random()-0.5)*5;
+                     
+                     data.current.x[i*3] = data.current.target[i*3];
+                     data.current.x[i*3+1] = data.current.target[i*3+1];
+                     data.current.x[i*3+2] = data.current.target[i*3+2];
                  }
                  return;
              }
@@ -483,10 +475,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
         // HALF ADDER LOGIC
         if (gateType === 'HALF_ADDER') {
-             if (circuitMode === 'MEMORY_CELL') {
-                 // Handled in local logic
-             } else if (circuitMode === 'DECODER_2_4') {
-                 // Handled in local logic
+             if (circuitMode === 'REGISTER_BANK') {
+                 // Handled locally
+             } else if (circuitMode === 'RIPPLE_ADDER') {
+                 // Handled locally
              } else if (circuitMode === 'FULL_ADDER') {
                  // Sum = A XOR B XOR Cin
                  const xorAB = A_Active !== B_Active;
@@ -546,62 +538,90 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             };
 
             // --- MODE SPECIFIC PHYSICS ---
-            if (circuitMode === 'MEMORY_CELL' && gateType === 'HALF_ADDER') {
-                // MEMORY REGISTER PHYSICS
-                if (rid === 0) { 
-                    // Input Line
-                    localAmp = getPulse(0) * 0.5;
-                } else if (rid === 1) { 
-                    // Storage Ring
-                    if (params.memoryBit === 1) {
-                        // High Energy Storage - Spin Effect
-                        isGolden = true;
-                        localAmp = 1.0;
-                        
-                        // Physics: Centripetal Force Trap
-                        const centerX = 25; const centerY = 0;
-                        const dx = x[idx3] - centerX;
-                        const dy = x[idx3+1] - centerY;
-                        const dist = Math.sqrt(dx*dx + dy*dy);
-                        const radius = 15;
-                        
-                        // 1. Tangential Velocity (Spin)
-                        // Vector (-y, x)
-                        const spinSpeed = 0.5;
-                        v[idx3] += (-dy / dist) * spinSpeed;
-                        v[idx3+1] += (dx / dist) * spinSpeed;
-                        
-                        // 2. Centripetal Force (Keep on ring)
-                        const pull = (radius - dist) * 0.1;
-                        v[idx3] += (dx / dist) * pull;
-                        v[idx3+1] += (dy / dist) * pull;
-                        
-                        // 3. Z-Axis Containment (Flatten)
-                        v[idx3+2] -= x[idx3+2] * 0.1;
-
-                    } else {
-                        // Cleared - Static, high friction
-                        localAmp = 0;
-                    }
+            if (circuitMode === 'REGISTER_BANK' && gateType === 'HALF_ADDER') {
+                // 4-BIT REGISTER
+                // Check if this bit is active
+                // rid = 0..3 corresponds to bits 0..3
+                const isStored = (params.registerState & (1 << rid)) !== 0;
+                
+                if (isStored) {
+                    isGolden = true;
+                    localAmp = 1.0;
+                    
+                    // MAGNETIC BOTTLE PHYSICS
+                    const centerX = -30 + (rid * 20);
+                    const centerY = 0;
+                    const dx = x[idx3] - centerX;
+                    const dy = x[idx3+1] - centerY;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    const radius = 8;
+                    
+                    // 1. Tangential Velocity (Orbital spin)
+                    const spinSpeed = 0.8;
+                    v[idx3] += (-dy / (dist+0.1)) * spinSpeed;
+                    v[idx3+1] += (dx / (dist+0.1)) * spinSpeed;
+                    
+                    // 2. Strong Centripetal Force (The Bottle walls)
+                    const pull = (radius - dist) * 0.2;
+                    v[idx3] += (dx / (dist+0.1)) * pull;
+                    v[idx3+1] += (dy / (dist+0.1)) * pull;
+                    
+                    // 3. Z-Axis Flattening
+                    v[idx3+2] -= x[idx3+2] * 0.15;
+                } else {
+                    // Empty state - Scatter physics
+                    // Particles should drift aimlessly or jitter
+                    turbulence = 0.2; // Mild turbulence
+                    localAmp = 0;
+                    // Push away from center lightly to prevent clumping
+                    const centerX = -30 + (rid * 20);
+                    const dx = x[idx3] - centerX;
+                    if (Math.abs(dx) < 2) v[idx3] += dx * 0.1;
                 }
             }
-            else if (circuitMode === 'DECODER_2_4' && gateType === 'HALF_ADDER') {
-                // 2-to-4 DECODER
-                if (rid === 0) { if (A_Active) localAmp = getPulse(0); } // A
-                else if (rid === 1) { if (B_Active) localAmp = getPulse(0); } // B
-                else {
-                    // Decoder Outputs
-                    const outIdx = rid - 2; // 0..3
-                    let active = false;
-                    if (outIdx === 0 && !A_Active && !B_Active) active = true;
-                    if (outIdx === 1 && !A_Active && B_Active) active = true;
-                    if (outIdx === 2 && A_Active && !B_Active) active = true;
-                    if (outIdx === 3 && A_Active && B_Active) active = true;
-                    
-                    if (active) {
-                        localAmp = getPulse(0) * 1.5;
-                        isGolden = true;
-                    }
+            else if (circuitMode === 'RIPPLE_ADDER' && gateType === 'HALF_ADDER') {
+                // 4-BIT ADDER PHYSICS
+                // rid = 0..3 (Bit index)
+                // Determine logic state for this bit
+                const bit = rid;
+                const bitA = (params.inputA_4bit >> bit) & 1;
+                const bitB = (params.inputB_4bit >> bit) & 1;
+                
+                // Calculate Ripple Carry
+                let carry = 0;
+                for(let b=0; b<bit; b++) {
+                    const ba = (params.inputA_4bit >> b) & 1;
+                    const bb = (params.inputB_4bit >> b) & 1;
+                    const sum = ba + bb + carry;
+                    carry = sum > 1 ? 1 : 0;
+                }
+                
+                const bitCin = carry;
+                const bitSum = (bitA ^ bitB ^ bitCin) === 1;
+                const bitCout = (bitA & bitB) | (bitCin & (bitA ^ bitB));
+                
+                // Visualization
+                // Input activity
+                if (bitA || bitB) localAmp += getPulse(0) * 0.5;
+                
+                // Sum activity
+                if (bitSum) {
+                    localAmp = getPulse(0);
+                    isGolden = false; // Greenish
+                }
+                
+                // Carry activity (visualized as turbulence or intense flow)
+                if (bitCout) {
+                    isGolden = true; // Gold
+                    localAmp = Math.max(localAmp, getPulse(0) * 1.2);
+                }
+                
+                // Destructive interference if inputs conflict but sum is 0
+                if ((bitA && bitB && !bitCin) || (bitA && bitCin && !bitB) || (bitB && bitCin && !bitA)) {
+                     // 2 inputs active, sum is 0, carry is 1. 
+                     // The sum region should show interference, but Carry region carries on.
+                     // Since we merge them, let's show a mix.
+                     if (!bitSum) turbulence = 0.8;
                 }
             }
             else if (circuitMode === 'FULL_ADDER' && gateType === 'HALF_ADDER') {
@@ -680,10 +700,11 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             let inputActive = false;
             let outputActive = false;
             
-            if (circuitMode === 'MEMORY_CELL') {
-                if (rid === 1 && params.memoryBit === 1) outputActive = true;
-            } else if (circuitMode === 'DECODER_2_4') {
-                if (rid >= 2) outputActive = true; // All output lines
+            if (circuitMode === 'REGISTER_BANK') {
+                if ((params.registerState & (1 << rid)) !== 0) outputActive = true;
+            } else if (circuitMode === 'RIPPLE_ADDER') {
+                // Inputs are implicit in the stage logic above, visuals driven by localAmp
+                if (localAmp > 0.1) outputActive = true; 
             } else {
                 if (rid < (circuitMode === 'FULL_ADDER' ? 3 : 2)) inputActive = true;
                 else outputActive = true;
@@ -697,17 +718,10 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
             } else {
                  // Output Regions Logic for Flow
                  let targetAct = 0.0;
-                 if (circuitMode === 'MEMORY_CELL') {
-                     targetAct = (rid === 1 && params.memoryBit === 1) ? 1.0 : 0.0;
-                 } else if (circuitMode === 'DECODER_2_4') {
-                     // Check logic again for flow
-                     const outIdx = rid - 2;
-                     let active = false;
-                     if (outIdx === 0 && !A_Active && !B_Active) active = true;
-                     if (outIdx === 1 && !A_Active && B_Active) active = true;
-                     if (outIdx === 2 && A_Active && !B_Active) active = true;
-                     if (outIdx === 3 && A_Active && B_Active) active = true;
-                     targetAct = active ? 1.0 : 0.0;
+                 if (circuitMode === 'REGISTER_BANK') {
+                     targetAct = ((params.registerState & (1 << rid)) !== 0) ? 1.0 : 0.0;
+                 } else if (circuitMode === 'RIPPLE_ADDER') {
+                     targetAct = localAmp > 0.1 ? 1.0 : 0.0;
                  } else if (gateType === 'HALF_ADDER') {
                      if (circuitMode === 'FULL_ADDER') {
                          if (rid === 3) targetAct = intendedSum ? 1.0 : 0.0;
@@ -723,7 +737,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                  activation[i] += (targetAct - activation[i]) * 0.1;
                  
                  // Flow visual
-                 if (activation[i] > 0.1 && circuitMode !== 'MEMORY_CELL') {
+                 if (activation[i] > 0.1 && circuitMode !== 'REGISTER_BANK') {
                      // Flow direction: +X
                      v[idx3] += localAmp * 0.5; // Accelerate right
                      v[idx3+1] += localAmp * 0.1; // Bobble
@@ -743,9 +757,9 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
 
             // Damping (Special case for Memory Register: No Damping when active!)
             let dampingFactor = 0.8;
-            if (circuitMode === 'MEMORY_CELL' && rid === 1) {
-                if (params.memoryBit === 1) dampingFactor = 0.98; // Low friction for storage
-                else dampingFactor = 0.5; // High friction for clear
+            if (circuitMode === 'REGISTER_BANK') {
+                if ((params.registerState & (1 << rid)) !== 0) dampingFactor = 0.99; // Low friction for storage (Superconductor)
+                else dampingFactor = 0.5; // High friction for clear (Insulator)
             }
             
             v[idx3] *= dampingFactor;
@@ -780,7 +794,7 @@ const ParticleSystem: React.FC<ParticleSystemProps> = ({ params, dataRef, statsR
                 const pulseBoost = localAmp * 0.8; 
                 const t = Math.min(1.0, brightness + pulseBoost);
                 
-                if (circuitMode === 'MEMORY_CELL' && rid === 1) {
+                if (circuitMode === 'REGISTER_BANK') {
                      // Memory Plasma Color
                      TEMP_COLOR.setHex(0xFFAA00);
                      TEMP_COLOR.lerp(WHITE, localAmp);
@@ -1137,40 +1151,37 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
      const shape = [];
      
      if (gateType === 'HALF_ADDER') {
-         if (circuitMode === 'MEMORY_CELL') {
-             // Memory Latch (Straight line to Circle)
-             shape.push([new THREE.Vector3(-40, 5, 0), new THREE.Vector3(5, 5, 0)]);
-             
-             // Circle approximation
-             const circle = [];
-             for(let i=0; i<=32; i++) {
-                 const theta = (i/32) * Math.PI * 2;
-                 circle.push(new THREE.Vector3(25 + Math.cos(theta)*15, Math.sin(theta)*15, 0));
+         if (circuitMode === 'REGISTER_BANK') {
+             // 4 Rings visual
+             for(let i=0; i<4; i++) {
+                 const cx = -30 + (i * 20);
+                 const circle = [];
+                 for(let j=0; j<=32; j++) {
+                     const theta = (j/32) * Math.PI * 2;
+                     circle.push(new THREE.Vector3(cx + Math.cos(theta)*8, Math.sin(theta)*8, 0));
+                 }
+                 shape.push(circle);
              }
-             shape.push(circle);
              return shape;
          }
 
-         if (circuitMode === 'DECODER_2_4') {
-             // A, B Inputs
-             shape.push([new THREE.Vector3(-40, 15, 0), new THREE.Vector3(-10, 15, 0)]);
-             shape.push([new THREE.Vector3(-40, -15, 0), new THREE.Vector3(-10, -15, 0)]);
-             
-             // Box
-             const box = [];
-             box.push(new THREE.Vector3(-10, 35, 0));
-             box.push(new THREE.Vector3(10, 35, 0));
-             box.push(new THREE.Vector3(10, -35, 0));
-             box.push(new THREE.Vector3(-10, -35, 0));
-             box.push(new THREE.Vector3(-10, 35, 0));
-             shape.push(box);
-             
-             // Outputs
-             shape.push([new THREE.Vector3(10, 30, 0), new THREE.Vector3(30, 30, 0)]);
-             shape.push([new THREE.Vector3(10, 10, 0), new THREE.Vector3(30, 10, 0)]);
-             shape.push([new THREE.Vector3(10, -10, 0), new THREE.Vector3(30, -10, 0)]);
-             shape.push([new THREE.Vector3(10, -30, 0), new THREE.Vector3(30, -30, 0)]);
-             
+         if (circuitMode === 'RIPPLE_ADDER') {
+             // 4 Stages chained
+             for(let i=0; i<4; i++) {
+                 const bx = -45 + (i * 30);
+                 const box = [
+                     new THREE.Vector3(bx-10, 20, 0), new THREE.Vector3(bx+10, 20, 0),
+                     new THREE.Vector3(bx+10, -20, 0), new THREE.Vector3(bx-10, -20, 0),
+                     new THREE.Vector3(bx-10, 20, 0)
+                 ];
+                 shape.push(box);
+                 // Input lines
+                 shape.push([new THREE.Vector3(bx, 30, 0), new THREE.Vector3(bx, 20, 0)]);
+                 // Carry line to next
+                 if(i < 3) {
+                     shape.push([new THREE.Vector3(bx+10, 0, 0), new THREE.Vector3(bx+20, 0, 0)]);
+                 }
+             }
              return shape;
          }
 
@@ -1229,21 +1240,22 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
           {points.map((p, i) => (
               <Line key={i} points={p} color="cyan" opacity={0.2} transparent lineWidth={1} />
           ))}
-          {gateType === 'HALF_ADDER' && circuitMode === 'MEMORY_CELL' && (
+          {gateType === 'HALF_ADDER' && circuitMode === 'REGISTER_BANK' && (
               <>
-                 <Text position={[-42, 5, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">DATA IN</Text>
-                 <Text position={[25, 0, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">MAGNETIC TRAP</Text>
+                 <Text position={[-30, 12, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">BIT 0</Text>
+                 <Text position={[-10, 12, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">BIT 1</Text>
+                 <Text position={[10, 12, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">BIT 2</Text>
+                 <Text position={[30, 12, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">BIT 3</Text>
+                 <Text position={[0, -15, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">MAGNETIC REGISTER BANK (4-BIT)</Text>
               </>
           )}
-          {gateType === 'HALF_ADDER' && circuitMode === 'DECODER_2_4' && (
+          {gateType === 'HALF_ADDER' && circuitMode === 'RIPPLE_ADDER' && (
               <>
-                 <Text position={[-42, 15, 0]} fontSize={2} color="#00FFFF" anchorX="right" anchorY="middle">A</Text>
-                 <Text position={[-42, -15, 0]} fontSize={2} color="#FF00FF" anchorX="right" anchorY="middle">B</Text>
-                 <Text position={[0, 0, 0]} fontSize={2} color="#888888" anchorX="center" anchorY="middle">2-TO-4 DECODER</Text>
-                 <Text position={[32, 30, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">00</Text>
-                 <Text position={[32, 10, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">01</Text>
-                 <Text position={[32, -10, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">10</Text>
-                 <Text position={[32, -30, 0]} fontSize={2} color="#FFFFFF" anchorX="left" anchorY="middle">11</Text>
+                 <Text position={[-45, 25, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">ADDER 0</Text>
+                 <Text position={[-15, 25, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">ADDER 1</Text>
+                 <Text position={[15, 25, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">ADDER 2</Text>
+                 <Text position={[45, 25, 0]} fontSize={2} color="#FFFFFF" anchorX="center" anchorY="middle">ADDER 3</Text>
+                 <Text position={[0, -25, 0]} fontSize={2} color="#FFD700" anchorX="center" anchorY="middle">4-BIT RIPPLE CARRY CHAIN</Text>
               </>
           )}
           {gateType === 'HALF_ADDER' && circuitMode === 'FULL_ADDER' && (
@@ -1275,36 +1287,90 @@ const LogicGateOverlay: React.FC<{ gateType: string, circuitMode: string }> = ({
   )
 }
 
-const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
-    if (!params.showRegions && !params.logicMode) return null;
-    if (params.logicMode) return <LogicGateOverlay gateType={params.gateType} circuitMode={params.circuitMode} />;
-    
-    return (
-        <group>
-            <Cylinder args={[0.5, 0.5, 40, 8]} position={[-35, 0, 0]} rotation={[0, 0, 0]}>
-                <meshBasicMaterial color="#ff0055" transparent opacity={0.2} />
-            </Cylinder>
-             <Cylinder args={[0.5, 0.5, 40, 8]} position={[35, 0, 0]} rotation={[0, 0, 0]}>
-                <meshBasicMaterial color="#0055ff" transparent opacity={0.2} />
-            </Cylinder>
-        </group>
-    );
-};
-
 // --- UI Components ---
 
-const TruthTable: React.FC<{ a: boolean, b: boolean, c: boolean, gateType: 'AND' | 'OR' | 'XOR' | 'NAND' | 'NOR' | 'XNOR' | 'NOT' | 'HALF_ADDER', circuitMode: string }> = ({ a, b, c, gateType, circuitMode }) => {
-    const rowClass = (ra: boolean, rb: boolean, rc?: boolean) => {
-        // For NOT gate, we only care about 'a' matching
-        if (gateType === 'NOT') {
-            return (a === ra) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
-        }
-        if (circuitMode === 'FULL_ADDER') {
-             return (a === ra && b === rb && c === !!rc) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
-        }
-        return (a === ra && b === rb) ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
-    }
+const TruthTable: React.FC<{ params: SimulationParams }> = ({ params }) => {
+    const rowClass = (active: boolean) => active ? "bg-cyan-900/50 text-white font-bold border border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : "text-gray-600";
     
+    const { gateType, circuitMode, logicState } = params;
+    const a = logicState[0];
+    const b = logicState[1];
+    const c = logicState[2];
+
+    if (gateType === 'HALF_ADDER') {
+        if (circuitMode === 'REGISTER_BANK') return (
+            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                <div className="text-[10px] text-gray-500 font-mono text-center">MEMORY BANK STATUS</div>
+                <div className="text-2xl font-mono text-center text-amber-500 font-bold tracking-widest mt-1">
+                    {params.registerState.toString(2).padStart(4, '0')}
+                </div>
+                <div className="text-[9px] text-gray-500 text-center">DEC: {params.registerState}</div>
+            </div>
+        );
+
+        if (circuitMode === 'RIPPLE_ADDER') {
+            const sum = params.inputA_4bit + params.inputB_4bit;
+            return (
+                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                     <div className="text-[10px] text-gray-500 font-mono text-center mb-1">4-BIT ADDER STATE</div>
+                     <div className="flex justify-between text-xs font-mono text-gray-400 mb-1">
+                         <span>A: {params.inputA_4bit.toString(2).padStart(4,'0')} ({params.inputA_4bit})</span>
+                         <span>+</span>
+                         <span>B: {params.inputB_4bit.toString(2).padStart(4,'0')} ({params.inputB_4bit})</span>
+                     </div>
+                     <div className="border-t border-gray-700 my-1"></div>
+                     <div className="text-xl font-mono text-center text-green-400 font-bold">
+                         = {sum.toString(2).padStart(5,'0')} ({sum})
+                     </div>
+                 </div>
+            )
+        }
+
+        if (circuitMode === 'FULL_ADDER') {
+            const getSum = (vA: boolean, vB: boolean, vC: boolean) => ((vA !== vB) !== vC) ? 1 : 0;
+            const getCarry = (vA: boolean, vB: boolean, vC: boolean) => ((vA && vB) || (vC && (vA !== vB))) ? 1 : 0;
+            
+            return (
+                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                     <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Full Adder Truth Table</div>
+                     <div className="grid grid-cols-5 gap-1 text-[10px] font-mono text-center">
+                        <div className="text-gray-400 font-bold pb-1">A</div>
+                        <div className="text-gray-400 font-bold pb-1">B</div>
+                        <div className="text-gray-400 font-bold pb-1">Cin</div>
+                        <div className="text-green-500 font-bold pb-1">S</div>
+                        <div className="text-yellow-500 font-bold pb-1">C</div>
+                        {/* Current State Highlight */}
+                        <div className={rowClass(a)}>{a?1:0}</div>
+                        <div className={rowClass(b)}>{b?1:0}</div>
+                        <div className={rowClass(c)}>{c?1:0}</div>
+                        <div className="text-white font-bold">{getSum(a,b,c)}</div>
+                        <div className="text-white font-bold">{getCarry(a,b,c)}</div>
+                     </div>
+                 </div>
+            )
+        }
+
+        // Half Adder Truth Table
+        const getSum = (vA: boolean, vB: boolean) => (vA !== vB) ? 1 : 0;
+        const getCarry = (vA: boolean, vB: boolean) => (vA && vB) ? 1 : 0;
+        return (
+            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
+                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Half Adder Truth Table</div>
+                <div className="grid grid-cols-4 gap-1 text-xs font-mono text-center">
+                    <div className="text-gray-400 font-bold pb-1">A</div>
+                    <div className="text-gray-400 font-bold pb-1">B</div>
+                    <div className="text-green-500 font-bold pb-1">S</div>
+                    <div className="text-yellow-500 font-bold pb-1">C</div>
+                    <div className={rowClass(a)}>{a?1:0}</div>
+                    <div className={rowClass(b)}>{b?1:0}</div>
+                    <div className="text-white font-bold">{getSum(a,b)}</div>
+                    <div className="text-white font-bold">{getCarry(a,b)}</div>
+                </div>
+            </div>
+        )
+    }
+
+    // Standard Gates Logic
     const getOut = (vA: boolean, vB: boolean) => {
         switch(gateType) {
             case 'AND': return (vA && vB) ? 1 : 0;
@@ -1318,113 +1384,13 @@ const TruthTable: React.FC<{ a: boolean, b: boolean, c: boolean, gateType: 'AND'
         }
     }
 
-    if (gateType === 'HALF_ADDER') {
-        if (circuitMode === 'MEMORY_CELL') return null; // No truth table for Register
-
-        if (circuitMode === 'DECODER_2_4') {
-            const isActive = (idx: number) => {
-                if (idx === 0 && !a && !b) return true;
-                if (idx === 1 && !a && b) return true;
-                if (idx === 2 && a && !b) return true;
-                if (idx === 3 && a && b) return true;
-                return false;
-            };
-            return (
-                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-                     <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">2-to-4 Decoder</div>
-                     <div className="grid grid-cols-6 gap-1 text-[10px] font-mono text-center">
-                        <div className="text-gray-400 font-bold pb-1">A</div>
-                        <div className="text-gray-400 font-bold pb-1">B</div>
-                        <div className="text-yellow-500 font-bold pb-1">D0</div>
-                        <div className="text-yellow-500 font-bold pb-1">D1</div>
-                        <div className="text-yellow-500 font-bold pb-1">D2</div>
-                        <div className="text-yellow-500 font-bold pb-1">D3</div>
-
-                        <div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>1</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div><div className={rowClass(false, false)}>0</div>
-                        <div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>1</div><div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>1</div><div className={rowClass(false, true)}>0</div><div className={rowClass(false, true)}>0</div>
-                        <div className={rowClass(true, false)}>1</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>0</div><div className={rowClass(true, false)}>1</div><div className={rowClass(true, false)}>0</div>
-                        <div className={rowClass(true, true)}>1</div><div className={rowClass(true, true)}>1</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>0</div><div className={rowClass(true, true)}>1</div>
-                     </div>
-                 </div>
-            )
-        }
-
-        if (circuitMode === 'FULL_ADDER') {
-            return (
-                 <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-                     <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Full Adder Truth Table</div>
-                     <div className="grid grid-cols-5 gap-1 text-[10px] font-mono text-center">
-                        <div className="text-gray-400 font-bold pb-1">A</div>
-                        <div className="text-gray-400 font-bold pb-1">B</div>
-                        <div className="text-gray-400 font-bold pb-1">Cin</div>
-                        <div className="text-green-500 font-bold pb-1">S</div>
-                        <div className="text-yellow-500 font-bold pb-1">C</div>
-
-                        <div className={rowClass(false, false, false)}>0</div><div className={rowClass(false, false, false)}>0</div><div className={rowClass(false, false, false)}>0</div><div>0</div><div>0</div>
-                        <div className={rowClass(false, false, true)}>0</div><div className={rowClass(false, false, true)}>0</div><div className={rowClass(false, false, true)}>1</div><div>1</div><div>0</div>
-                        <div className={rowClass(false, true, false)}>0</div><div className={rowClass(false, true, false)}>1</div><div className={rowClass(false, true, false)}>0</div><div>1</div><div>0</div>
-                        <div className={rowClass(false, true, true)}>0</div><div className={rowClass(false, true, true)}>1</div><div className={rowClass(false, true, true)}>1</div><div>0</div><div>1</div>
-                        <div className={rowClass(true, false, false)}>1</div><div className={rowClass(true, false, false)}>0</div><div className={rowClass(true, false, false)}>0</div><div>1</div><div>0</div>
-                        <div className={rowClass(true, false, true)}>1</div><div className={rowClass(true, false, true)}>0</div><div className={rowClass(true, false, true)}>1</div><div>0</div><div>1</div>
-                        <div className={rowClass(true, true, false)}>1</div><div className={rowClass(true, true, false)}>1</div><div className={rowClass(true, true, false)}>0</div><div>0</div><div>1</div>
-                        <div className={rowClass(true, true, true)}>1</div><div className={rowClass(true, true, true)}>1</div><div className={rowClass(true, true, true)}>1</div><div>1</div><div>1</div>
-                     </div>
-                 </div>
-            )
-        }
-
-        const getSum = (vA: boolean, vB: boolean) => (vA !== vB) ? 1 : 0;
-        const getCarry = (vA: boolean, vB: boolean) => (vA && vB) ? 1 : 0;
-
-        return (
-            <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Arithmetic Truth Table</div>
-                <div className="grid grid-cols-4 gap-1 text-xs font-mono text-center">
-                    <div className="text-gray-400 font-bold pb-1">A</div>
-                    <div className="text-gray-400 font-bold pb-1">B</div>
-                    <div className="text-green-500 font-bold pb-1">S</div>
-                    <div className="text-yellow-500 font-bold pb-1">C</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getSum(false,false)}</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getCarry(false,false)}</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>0</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getSum(false,true)}</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getCarry(false,true)}</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>0</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getSum(true,false)}</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getCarry(true,false)}</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getSum(true,true)}</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getCarry(true,true)}</div>
-                </div>
-                <div className="text-[10px] text-gray-500 text-center mt-2 border-t border-gray-800 pt-1">
-                     RESULT: {getCarry(a,b)}{getSum(a,b)} ({(a?1:0) + (b?1:0)})
-                </div>
-            </div>
-        )
-    }
-
     if (gateType === 'NOT') {
          return (
             <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table (NOT)</div>
+                <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic (NOT)</div>
                 <div className="grid grid-cols-2 gap-1 text-xs font-mono text-center">
-                    <div className="text-gray-400 font-bold pb-1">IN</div>
-                    <div className="text-gray-400 font-bold pb-1">OUT</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getOut(false, false)}</div>
-
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
-                    <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getOut(true, false)}</div>
+                    <div className="text-gray-400 font-bold pb-1">IN</div><div className="text-gray-400 font-bold pb-1">OUT</div>
+                    <div className={rowClass(a)}>{a?1:0}</div><div className="text-white font-bold">{getOut(a, false)}</div>
                 </div>
             </div>
         )
@@ -1432,81 +1398,10 @@ const TruthTable: React.FC<{ a: boolean, b: boolean, c: boolean, gateType: 'AND'
 
     return (
         <div className="mt-4 p-2 bg-black/40 border border-gray-800 backdrop-blur-sm">
-            <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic Truth Table ({gateType})</div>
+            <div className="text-[10px] text-gray-500 font-mono mb-2 uppercase tracking-widest text-center border-b border-gray-800 pb-1">Logic ({gateType})</div>
             <div className="grid grid-cols-3 gap-1 text-xs font-mono text-center">
-                <div className="text-gray-400 font-bold pb-1">A</div>
-                <div className="text-gray-400 font-bold pb-1">B</div>
-                <div className="text-gray-400 font-bold pb-1">OUT</div>
-
-                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, false)}`}>{getOut(false, false)}</div>
-
-                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(false, true)}`}>{getOut(false, true)}</div>
-
-                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>0</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, false)}`}>{getOut(true, false)}</div>
-
-                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>1</div>
-                <div className={`p-1 rounded transition-colors ${rowClass(true, true)}`}>{getOut(true, true)}</div>
-            </div>
-        </div>
-    )
-}
-
-const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart }) => {
-    return (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 text-white font-['Rajdhani']">
-            <div className="flex flex-col items-start space-y-6 max-w-4xl w-full p-10 border-l-4 border-cyan-500 bg-black/50 backdrop-blur-md">
-                <div className="text-sm text-cyan-500 tracking-[0.3em] opacity-80 mb-[-10px]">QUANTUM PREDICTIVE CODING LAB</div>
-                <h1 className="text-6xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-white to-purple-500">
-                    PREDICTIVE MORPHOLOGY
-                </h1>
-                <p className="max-w-xl text-gray-400 font-mono text-sm leading-relaxed border-t border-gray-800 pt-4">
-                    Explore the thermodynamics of active inference. Simulate biological memory, causal prediction, and quantum logic gates using a particle-based holographic neural network.
-                </p>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full mt-8">
-                     <button onClick={() => onStart('standard')} className="text-left p-4 border border-gray-700 hover:border-cyan-400 hover:bg-cyan-900/20 transition-all group">
-                        <div className="text-cyan-400 font-bold tracking-widest text-xs mb-1 group-hover:text-cyan-300">SANDBOX</div>
-                        <div className="text-xl font-bold text-white">STANDARD SIMULATION</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Baseline free energy minimization.</div>
-                    </button>
-
-                    <button onClick={() => onStart('inference')} className="text-left p-4 border border-gray-700 hover:border-yellow-400 hover:bg-yellow-900/20 transition-all group">
-                        <div className="text-yellow-400 font-bold tracking-widest text-xs mb-1 group-hover:text-yellow-300">EXPERIMENT A</div>
-                        <div className="text-xl font-bold text-white">ACTIVE INFERENCE</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Thermodynamic agency & stabilization.</div>
-                    </button>
-
-                    <button onClick={() => onStart('temporal')} className="text-left p-4 border border-gray-700 hover:border-green-400 hover:bg-green-900/20 transition-all group">
-                        <div className="text-green-400 font-bold tracking-widest text-xs mb-1 group-hover:text-green-300">EXPERIMENT B</div>
-                        <div className="text-xl font-bold text-white">CAUSAL PREDICTION</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Hebbian temporal learning (STDP).</div>
-                    </button>
-                    
-                    <button onClick={() => onStart('paper')} className="text-left p-4 border border-gray-700 hover:border-purple-400 hover:bg-purple-900/20 transition-all group">
-                        <div className="text-purple-400 font-bold tracking-widest text-xs mb-1 group-hover:text-purple-300">EXPERIMENT C</div>
-                        <div className="text-xl font-bold text-white">L-GROUP DYNAMICS</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Spin/Phase vibrational coupling.</div>
-                    </button>
-
-                    <button onClick={() => onStart('logic')} className="text-left p-4 border border-gray-700 hover:border-red-400 hover:bg-red-900/20 transition-all group">
-                        <div className="text-red-400 font-bold tracking-widest text-xs mb-1 group-hover:text-red-300">EXPERIMENT D</div>
-                        <div className="text-xl font-bold text-white">LOGIC CIRCUITS</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Quantum Gates: XOR, AND, OR, NAND...</div>
-                    </button>
-
-                    <button onClick={() => onStart('adder')} className="text-left p-4 border border-gray-700 hover:border-orange-400 hover:bg-orange-900/20 transition-all group">
-                        <div className="text-orange-400 font-bold tracking-widest text-xs mb-1 group-hover:text-orange-300">EXPERIMENT E</div>
-                        <div className="text-xl font-bold text-white">CPU BUILDING BLOCKS</div>
-                        <div className="text-xs text-gray-500 mt-2 font-mono">Adders, Registers, and Memory Latching.</div>
-                    </button>
-                </div>
+                <div className="text-gray-400 font-bold pb-1">A</div><div className="text-gray-400 font-bold pb-1">B</div><div className="text-gray-400 font-bold pb-1">OUT</div>
+                <div className={rowClass(a)}>{a?1:0}</div><div className={rowClass(b)}>{b?1:0}</div><div className="text-white font-bold">{getOut(a,b)}</div>
             </div>
         </div>
     )
@@ -1584,46 +1479,52 @@ const UIOverlay: React.FC<{
                         <>
                         <div className="text-xs text-orange-500 font-bold tracking-widest border-b border-orange-900 pb-1">COMPONENT TYPE</div>
                         <div className="grid grid-cols-4 gap-1 mb-3">
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'HALF_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'HALF_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>HALF ADDER</button>
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'FULL_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'FULL_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>FULL ADDER</button>
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'DECODER_2_4', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'DECODER_2_4' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>DECODER</button>
-                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'MEMORY_CELL', loopActive: false, memoryBit: 0}))} className={`py-2 text-[9px] font-bold border ${params.circuitMode === 'MEMORY_CELL' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>REGISTER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'HALF_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[8px] font-bold border ${params.circuitMode === 'HALF_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>HALF ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'FULL_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[8px] font-bold border ${params.circuitMode === 'FULL_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>FULL ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'RIPPLE_ADDER', loopActive: false, logicState: [false,false,false]}))} className={`py-2 text-[8px] font-bold border ${params.circuitMode === 'RIPPLE_ADDER' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>CHAIN ADDER</button>
+                            <button onClick={() => setParams((p: any) => ({...p, circuitMode: 'REGISTER_BANK', loopActive: false, memoryBit: 0}))} className={`py-2 text-[8px] font-bold border ${params.circuitMode === 'REGISTER_BANK' ? 'bg-orange-500 text-black border-orange-400' : 'bg-black text-gray-500 border-gray-700'}`}>MEM BANK</button>
                         </div>
                         </>
                     )}
 
                     <div className="text-xs text-red-500 font-bold tracking-widest border-b border-red-900 pb-1">CIRCUIT CONTROLS</div>
                     
-                    {params.circuitMode === 'MEMORY_CELL' ? (
+                    {params.circuitMode === 'REGISTER_BANK' ? (
                         <div className="space-y-2 mt-2">
-                             <div className="flex gap-2">
-                                <button 
-                                    disabled={params.loopActive}
-                                    onClick={() => setParams((p: any) => ({...p, memoryBit: 1}))}
-                                    className={`flex-1 py-3 text-xs font-bold border transition-all ${params.memoryBit === 1 ? 'bg-amber-500 text-black border-amber-400' : 'bg-black text-gray-400 border-gray-700 hover:border-amber-500'} ${params.loopActive ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                >
-                                    WRITE 1
-                                </button>
-                                <button 
-                                    disabled={params.loopActive}
-                                    onClick={() => setParams((p: any) => ({...p, memoryBit: 0}))}
-                                    className={`flex-1 py-3 text-xs font-bold border transition-all ${params.memoryBit === 0 ? 'bg-red-900/30 text-red-400 border-red-500' : 'bg-black text-gray-400 border-gray-700 hover:border-red-500'} ${params.loopActive ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                >
-                                    CLEAR (0)
-                                </button>
+                             <div className="grid grid-cols-4 gap-1">
+                                <button onClick={() => setParams((p: any) => ({...p, registerState: p.registerState ^ 1}))} className={`text-[10px] border ${params.registerState&1 ? 'bg-amber-500 text-black' : 'border-gray-700'}`}>B0</button>
+                                <button onClick={() => setParams((p: any) => ({...p, registerState: p.registerState ^ 2}))} className={`text-[10px] border ${params.registerState&2 ? 'bg-amber-500 text-black' : 'border-gray-700'}`}>B1</button>
+                                <button onClick={() => setParams((p: any) => ({...p, registerState: p.registerState ^ 4}))} className={`text-[10px] border ${params.registerState&4 ? 'bg-amber-500 text-black' : 'border-gray-700'}`}>B2</button>
+                                <button onClick={() => setParams((p: any) => ({...p, registerState: p.registerState ^ 8}))} className={`text-[10px] border ${params.registerState&8 ? 'bg-amber-500 text-black' : 'border-gray-700'}`}>B3</button>
                              </div>
-                             <div className="p-2 bg-black/60 border border-gray-800 text-center relative">
-                                 <div className="text-[10px] text-gray-500">REGISTER STATE</div>
-                                 <div className={`text-3xl font-bold font-mono ${params.memoryBit === 1 ? "text-amber-500 drop-shadow-[0_0_8px_rgba(245,158,11,0.8)]" : "text-gray-700"}`}>
-                                    {params.memoryBit === 1 ? "LATCHED" : "EMPTY"}
-                                 </div>
-                             </div>
-                             {/* Memory Loop Button */}
                              <button 
-                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive, memoryBit: 0}))}
-                                className={`w-full py-2 text-xs font-bold border transition-all mt-2 ${params.loopActive ? 'bg-amber-900/40 border-amber-500 text-amber-200 animate-pulse' : 'bg-gray-900 border-gray-600 text-gray-400 hover:border-gray-400'}`}
+                                onClick={() => setParams((p: any) => ({...p, registerState: 0}))}
+                                className="w-full py-2 bg-red-900/30 border border-red-500 text-red-200 text-xs font-bold"
                              >
-                                {params.loopActive ? "RUNNING REGISTER TEST..." : "RUN MEMORY TEST LOOP"}
+                                CLEAR ALL
+                             </button>
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive}))}
+                                className={`w-full py-2 text-xs font-bold border ${params.loopActive ? 'bg-amber-900/40 border-amber-500 text-amber-200' : 'bg-gray-900 border-gray-600'}`}
+                             >
+                                {params.loopActive ? "STOP TEST CYCLE" : "RUN TEST CYCLE"}
+                             </button>
+                        </div>
+                    ) : params.circuitMode === 'RIPPLE_ADDER' ? (
+                        <div className="space-y-2 mt-2">
+                             <div className="flex justify-between items-center text-xs">
+                                 <span className="text-cyan-400">INPUT A</span>
+                                 <button onClick={() => setParams((p: any) => ({...p, inputA_4bit: (p.inputA_4bit + 1) % 16}))} className="px-2 py-1 border border-cyan-500 text-white">+</button>
+                             </div>
+                             <div className="flex justify-between items-center text-xs">
+                                 <span className="text-pink-400">INPUT B</span>
+                                 <button onClick={() => setParams((p: any) => ({...p, inputB_4bit: (p.inputB_4bit + 1) % 16}))} className="px-2 py-1 border border-pink-500 text-white">+</button>
+                             </div>
+                             <button 
+                                onClick={() => setParams((p: any) => ({...p, loopActive: !p.loopActive}))}
+                                className={`w-full py-2 text-xs font-bold border mt-2 ${params.loopActive ? 'bg-cyan-900/40 border-cyan-500 text-cyan-200' : 'bg-gray-900 border-gray-600'}`}
+                             >
+                                {params.loopActive ? "STOP CALCULATION LOOP" : "RUN CALCULATION LOOP"}
                              </button>
                         </div>
                     ) : (
@@ -1666,22 +1567,16 @@ const UIOverlay: React.FC<{
                              >
                                 {params.loopActive ? "STOP SIMULATION LOOP" : "RUN SIMULATION LOOP"}
                              </button>
-                             {params.loopActive && (
-                                 <div className="text-[9px] font-mono text-cyan-400 text-center mt-1">
-                                     SEQUENCE STATUS: {params.circuitMode === 'HALF_ADDER' || params.circuitMode === 'DECODER_2_4' ? `Cycle ${(params.logicState[0]?2:0) + (params.logicState[1]?1:0)}/4` : 'Cycling 8 States...'}
-                                 </div>
-                             )}
                         </div>
                         </>
                     )}
 
-                    <TruthTable a={params.logicState[0]} b={params.logicState[1]} c={params.logicState[2]} gateType={params.gateType} circuitMode={params.circuitMode} />
+                    <TruthTable params={params} />
 
                     <div className="text-[10px] text-gray-400 font-mono text-center pt-2 h-4">
                         {params.gateType === 'XOR' && params.logicState[0] && params.logicState[1] ? "PHYSICS: DESTRUCTIVE INTERFERENCE" : ""}
                         {params.gateType === 'AND' && params.logicState[0] && params.logicState[1] ? "PHYSICS: CONSTRUCTIVE WAVE SUM" : ""}
-                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 1 ? "PHYSICS: UNDAMPED PLASMA TOROID (LATCH)" : ""}
-                        {params.circuitMode === 'MEMORY_CELL' && params.memoryBit === 0 ? "PHYSICS: HIGH FRICTION (CLEAR)" : ""}
+                        {params.circuitMode === 'REGISTER_BANK' && params.registerState > 0 ? "PHYSICS: UNDAMPED PLASMA TOROID (LATCH)" : ""}
                     </div>
                 </div>
             )
@@ -1786,6 +1681,98 @@ const InfoModal: React.FC<{ mode: string; onClose: () => void }> = ({ mode, onCl
     )
 }
 
+const RegionGuides: React.FC<{ params: SimulationParams }> = ({ params }) => {
+  if (!params.showRegions) return null;
+
+  if (params.logicMode) {
+    return <LogicGateOverlay gateType={params.gateType} circuitMode={params.circuitMode} />;
+  }
+
+  return (
+    <group>
+      {/* Region 0: Input A / Cause */}
+      <mesh position={[-35, 0, 0]}>
+        <boxGeometry args={[25, 30, 25]} />
+        <meshBasicMaterial color="#00FFFF" wireframe transparent opacity={0.1} />
+      </mesh>
+      <Text position={[-35, 18, 0]} fontSize={2} color="#00FFFF" anchorX="center" anchorY="middle">
+        REGION A
+      </Text>
+
+      {/* Region 1: Input B / Effect */}
+      <mesh position={[35, 0, 0]}>
+        <boxGeometry args={[25, 30, 25]} />
+        <meshBasicMaterial color="#FF00FF" wireframe transparent opacity={0.1} />
+      </mesh>
+      <Text position={[35, 18, 0]} fontSize={2} color="#FF00FF" anchorX="center" anchorY="middle">
+        REGION B
+      </Text>
+
+      {/* Region 2: Processing / Output */}
+      <mesh position={[0, 0, 0]}>
+        <boxGeometry args={[30, 30, 30]} />
+        <meshBasicMaterial color="#FFFFFF" wireframe transparent opacity={0.05} />
+      </mesh>
+    </group>
+  );
+};
+
+const TitleScreen: React.FC<{ onStart: (mode: string) => void }> = ({ onStart }) => {
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black text-white z-50 pointer-events-auto">
+      <div className="max-w-4xl w-full p-8 relative">
+        <div className="absolute top-0 left-0 w-32 h-32 border-t-2 border-l-2 border-cyan-500/50"></div>
+        <div className="absolute bottom-0 right-0 w-32 h-32 border-b-2 border-r-2 border-cyan-500/50"></div>
+
+        <h1 className="text-6xl md:text-8xl font-black tracking-tighter mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-400">
+          MORPHIC
+        </h1>
+        <p className="text-xl md:text-2xl text-gray-400 font-light tracking-widest mb-12 uppercase">
+          Thermodynamic Computing Engine
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <button onClick={() => onStart('standard')} className="group relative p-6 border border-gray-800 hover:border-cyan-500 transition-all bg-gray-900/50 hover:bg-cyan-900/20 text-left">
+            <div className="text-cyan-500 text-xs font-bold tracking-widest mb-2">MODULE 01</div>
+            <div className="text-2xl font-bold text-white group-hover:text-cyan-400 mb-2">GENESIS</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Standard predictive coding dynamics. Chaos to Order.</p>
+          </button>
+
+          <button onClick={() => onStart('inference')} className="group relative p-6 border border-gray-800 hover:border-yellow-500 transition-all bg-gray-900/50 hover:bg-yellow-900/20 text-left">
+            <div className="text-yellow-500 text-xs font-bold tracking-widest mb-2">MODULE 02</div>
+            <div className="text-2xl font-bold text-white group-hover:text-yellow-400 mb-2">AGENCY</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Active Inference and thermodynamic temperature control.</p>
+          </button>
+
+          <button onClick={() => onStart('temporal')} className="group relative p-6 border border-gray-800 hover:border-green-500 transition-all bg-gray-900/50 hover:bg-green-900/20 text-left">
+            <div className="text-green-500 text-xs font-bold tracking-widest mb-2">MODULE 03</div>
+            <div className="text-2xl font-bold text-white group-hover:text-green-400 mb-2">CAUSALITY</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Hebbian temporal learning and prediction.</p>
+          </button>
+
+          <button onClick={() => onStart('paper')} className="group relative p-6 border border-gray-800 hover:border-purple-500 transition-all bg-gray-900/50 hover:bg-purple-900/20 text-left">
+            <div className="text-purple-500 text-xs font-bold tracking-widest mb-2">MODULE 04</div>
+            <div className="text-2xl font-bold text-white group-hover:text-purple-400 mb-2">SPIN GROUP</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Lie Group dynamics with intrinsic spin states.</p>
+          </button>
+
+          <button onClick={() => onStart('logic')} className="group relative p-6 border border-gray-800 hover:border-red-500 transition-all bg-gray-900/50 hover:bg-red-900/20 text-left">
+            <div className="text-red-500 text-xs font-bold tracking-widest mb-2">MODULE 05</div>
+            <div className="text-2xl font-bold text-white group-hover:text-red-400 mb-2">LOGIC GATE</div>
+            <p className="text-xs text-gray-500 leading-relaxed">XOR computation via wave interference.</p>
+          </button>
+
+          <button onClick={() => onStart('adder')} className="group relative p-6 border border-gray-800 hover:border-orange-500 transition-all bg-gray-900/50 hover:bg-orange-900/20 text-left">
+            <div className="text-orange-500 text-xs font-bold tracking-widest mb-2">MODULE 06</div>
+            <div className="text-2xl font-bold text-white group-hover:text-orange-400 mb-2">CPU CORE</div>
+            <p className="text-xs text-gray-500 leading-relaxed">Complex circuits: Adders and Registers.</p>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
     const [mode, setMode] = useState<string | null>(null);
     const [params, setParams] = useState<SimulationParams>(DEFAULT_PARAMS);
@@ -1812,28 +1799,26 @@ const App: React.FC = () => {
         if (!params.loopActive || params.gateType !== 'HALF_ADDER') return;
 
         let cycle = 0;
-        let intervalTime = 2000;
+        let intervalTime = 1500;
         
-        // Loop Logic based on Circuit Mode
         const loopFunction = () => {
-            if (params.circuitMode === 'MEMORY_CELL') {
-                 // Register Loop: Write 1 -> Hold -> Clear -> Hold
+            // Complex Circuit Automation
+            if (params.circuitMode === 'REGISTER_BANK') {
+                 // Counts up 0-15 and stores it
+                 setParams(current => ({ ...current, registerState: (current.registerState + 1) % 16 }));
+            }
+            else if (params.circuitMode === 'RIPPLE_ADDER') {
+                 // Random additions
                  setParams(current => {
-                     let nextBit = current.memoryBit;
-                     // Simple state machine via cycle counter (0-3)
-                     if (cycle === 0) nextBit = 1; // Write
-                     if (cycle === 1) nextBit = 1; // Hold
-                     if (cycle === 2) nextBit = 0; // Clear
-                     if (cycle === 3) nextBit = 0; // Hold
-                     
-                     return { ...current, memoryBit: nextBit };
+                     // If result odd, save? (Simulating conditional request in prompt)
+                     const a = Math.floor(Math.random()*8);
+                     const b = Math.floor(Math.random()*8);
+                     return { ...current, inputA_4bit: a, inputB_4bit: b };
                  });
-                 cycle = (cycle + 1) % 4;
             } 
             else if (params.circuitMode === 'FULL_ADDER') {
-                 // Full Adder Loop: Iterate all 8 binary states
+                 // 8 states
                  setParams(current => {
-                     // Convert cycle (0-7) to binary inputs
                      const a = (cycle & 4) !== 0;
                      const b = (cycle & 2) !== 0;
                      const c = (cycle & 1) !== 0;
@@ -1842,7 +1827,7 @@ const App: React.FC = () => {
                  cycle = (cycle + 1) % 8;
             }
             else {
-                 // Half Adder & Decoder Loop: Iterate 4 states (00, 01, 10, 11)
+                 // Half Adder
                  setParams(current => {
                      const a = (cycle & 2) !== 0;
                      const b = (cycle & 1) !== 0;
@@ -1853,7 +1838,7 @@ const App: React.FC = () => {
         };
 
         const interval = setInterval(loopFunction, intervalTime);
-        loopFunction(); // Run immediate first step
+        loopFunction(); // Run immediate
 
         return () => clearInterval(interval);
     }, [params.loopActive, params.gateType, params.circuitMode]);
@@ -1862,7 +1847,6 @@ const App: React.FC = () => {
     const handleStart = (selectedMode: string) => {
         setMode(selectedMode);
         
-        // Reset Params based on Mode
         const newParams = { ...DEFAULT_PARAMS };
         
         if (selectedMode === 'inference') {
@@ -1878,14 +1862,14 @@ const App: React.FC = () => {
         } else if (selectedMode === 'logic') {
             newParams.logicMode = true;
             newParams.usePaperPhysics = true;
-            newParams.inputText = "LOGIC"; // Placeholder, layout driven by logicMode
-            newParams.particleCount = 300; // REDUCED COUNT for cleaner physics match
+            newParams.inputText = "LOGIC";
+            newParams.particleCount = 300; 
         } else if (selectedMode === 'adder') {
             newParams.logicMode = true;
             newParams.usePaperPhysics = true;
             newParams.gateType = 'HALF_ADDER';
             newParams.inputText = "ADDER";
-            newParams.particleCount = 400; // Increased for complex layout
+            newParams.particleCount = 600; // Increased for 4-bit complexity
             newParams.accumulator = 0;
             newParams.loopActive = false;
             newParams.circuitMode = 'HALF_ADDER';
@@ -1905,19 +1889,13 @@ const App: React.FC = () => {
         setIsTesting(true);
         setTestResults([]);
         
-        // Ensure starting quiet
         setParams(p => ({ ...p, logicState: [false, false, false] }));
         await new Promise(resolve => setTimeout(resolve, 500));
     
-        // Capture count from current params to ensure consistency
         const count = params.particleCount;
         const currentGate = params.gateType;
 
         const getExpected = (a: boolean, b: boolean) => {
-             // For Half Adder test, we only test CARRY for now as a simple pass/fail, or Sum
-             // Let's test the primary function of the gate.
-             // If gate is Half Adder, we test the Carry bit for simplicity in this generic test runner
-             // or we ideally check both.
              if (currentGate === 'HALF_ADDER') return (a && b) ? 1.0 : 0.0; // Test Carry
 
             switch(currentGate) {
@@ -1939,7 +1917,6 @@ const App: React.FC = () => {
             { a: true, b: true, label: "INPUT: 11" }
         ];
 
-        // For NOT gate, we only need to test 0 and 1 on Input A
         if (currentGate === 'NOT') {
              cases = [
                  { a: false, b: false, label: "INPUT: 0" },
@@ -1950,25 +1927,20 @@ const App: React.FC = () => {
         const newResults: TestResult[] = [];
     
         for (const c of cases) {
-            // HARD RESET PHYSICS for test reliability
             dataRef.current.v.fill(0);
             dataRef.current.activation.fill(0);
 
             const expectedVal = getExpected(c.a, c.b);
 
-            // 1. Set Input
             setParams(p => ({ ...p, logicState: [c.a, c.b, false] }));
             
-            // 2. Wait for signal propagation (simulated)
             await new Promise(resolve => setTimeout(resolve, 1200));
     
-            // 3. Measure Output Region
             let totalAct = 0;
             let pCount = 0;
             
-            // Determine region to measure
             let targetRegion = 2;
-            if (currentGate === 'HALF_ADDER') targetRegion = 3; // Measure Carry
+            if (currentGate === 'HALF_ADDER') targetRegion = 3; 
             
             for (let i = 0; i < count; i++) {
                  if (dataRef.current.regionID[i] === targetRegion) {
@@ -1981,10 +1953,8 @@ const App: React.FC = () => {
             
             let passed = false;
             if (expectedVal > 0.5) {
-                // HIGH SIGNAL EXPECTED
-                passed = avg > 0.6; // Robust threshold thanks to deterministic logic
+                passed = avg > 0.6;
             } else {
-                // LOW SIGNAL EXPECTED (Interference or Off)
                 passed = avg < 0.2; 
             }
     
@@ -2000,7 +1970,6 @@ const App: React.FC = () => {
         }
     
         setIsTesting(false);
-        // Reset inputs
         setParams(p => ({ ...p, logicState: [false, false, false] }));
     };
 
